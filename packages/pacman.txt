@@ -1,0 +1,47 @@
+# Packages installed with pacman from the official Arch + CachyOS repos.
+# One package per line. Blank lines and #-comments are ignored.
+# Re-running is safe: pacman --needed skips anything already installed.
+
+# ── Apps ──────────────────────────────────────────────────────────────
+vesktop                      # Discord client
+brave-origin-bin             # Brave browser
+keepassxc                    # Password manager
+gnome-disk-utility           # Disk management GUI
+lact                         # AMD GPU control (fan curves, undervolt)
+# freerdp is only an *optional* dep of remmina, so it has to be named
+# explicitly — install remmina alone and you get no RDP plugin at all.
+remmina                      # Remote desktop client
+freerdp                      # Remmina's RDP plugin
+
+# ── Gaming ────────────────────────────────────────────────────────────
+protonup-qt                  # Manage Proton-GE / Wine-GE versions
+# These two are exactly what the "Install Gaming packages" button in
+# CachyOS Hello installs: Steam, Lutris, Proton, Wine, MangoHud, etc.
+cachyos-gaming-meta
+cachyos-gaming-applications
+
+# ── Package tooling ───────────────────────────────────────────────────
+# NOT on a stock CachyOS install — verified in a VM. The Flatpak step below
+# depends on this, so it has to be installed here first. (CachyOS ships
+# `shelly`, which can front for Flatpak, but it delegates to this same
+# binary — without it, shelly can't see Flathub either.)
+flatpak
+
+# ── Build toolchain (needed by AgentTileCLI + StreamHub) ──────────────
+git
+base-devel                   # gcc, make, pkg-config wrappers
+rust                         # cargo — builds AgentTileCLI
+pkgconf
+gtk4                         # AgentTileCLI: GTK4 >= 4.12
+vte4                         # AgentTileCLI: terminal widget, VTE >= 0.65
+nodejs                       # StreamHub (only if building from source)
+npm
+fuse2                        # StreamHub: AppImages need libfuse.so.2
+
+# ── Optional extras ───────────────────────────────────────────────────
+# Currently on your machine but not in the list you gave me. Uncomment
+# any you want on a fresh box.
+#chromium                    # second browser
+#github-cli                  # the `gh` command
+#xorg-server-xvfb            # headless X server (for testing GUI apps)
+#icewm                       # lightweight WM (pairs with Xvfb for testing)

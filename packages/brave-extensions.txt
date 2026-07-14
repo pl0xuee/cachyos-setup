@@ -1,0 +1,15 @@
+# Brave extensions, auto-installed on first launch via Chromium enterprise policy
+# (/etc/brave/policies/managed/). One extension ID per line.
+#
+# The ID is the long string in the Chrome Web Store URL:
+#   https://chromewebstore.google.com/detail/keepassxc-browser/oboonakemofpalcgghocfoadofidjkkk
+#                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#
+# These install as "normal_installed": Brave adds them automatically, but you can
+# still disable or remove any of them. The alternative, "force_installed", would
+# stop you uninstalling them at all — a lock worth avoiding on your own machine.
+
+oboonakemofpalcgghocfoadofidjkkk   # KeePassXC-Browser
+cimiefiiaegbelhefglklhhakcgmhkai   # Plasma Integration (KDE media controls, etc.)
+gdkadbhiemijfpoochcieonikoaciapi   # BigTube — better YouTube theater mode
+mdlbikciddolbenfkgggdegphnhmnfcg   # New Netflix 1080p

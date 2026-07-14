@@ -1,0 +1,4 @@
+# Nothing generated lives in here — but keep stray local state out of the repo.
+*.log
+*.bak
+*.partial

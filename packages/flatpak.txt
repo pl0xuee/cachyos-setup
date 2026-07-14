@@ -1,0 +1,4 @@
+# Flatpak apps, installed from Flathub. One app ID per line.
+# Only for things the repos don't carry — prefer pacman where possible.
+
+com.dropbox.Client           # Dropbox

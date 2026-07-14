@@ -1,0 +1,16 @@
+# KDE taskbar (Icons-only Task Manager) pinned launchers, in order, left to right.
+# One .desktop entry per line. Blank lines and #-comments are ignored.
+#
+# Find an app's entry name with:
+#   grep -l 'Name=Whatever' /usr/share/applications/*.desktop ~/.local/share/applications/*.desktop
+#
+# Reordering is just reordering these lines. Anything listed that isn't
+# installed gets skipped with a warning rather than leaving a blank tile.
+
+brave-origin.desktop                    # Brave
+vesktop.desktop                         # Vesktop
+steam.desktop                           # Steam
+org.keepassxc.KeePassXC.desktop         # KeePassXC
+org.kde.dolphin.desktop                 # Dolphin (file manager)
+dev.agenttilecli.AgentTileCli.desktop   # AgentTileCLI
+com.streamhub.app.desktop               # StreamHub
