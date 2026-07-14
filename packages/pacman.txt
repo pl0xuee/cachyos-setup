@@ -29,6 +29,7 @@ flatpak
 
 # ── Build toolchain (needed by AgentTileCLI + StreamHub) ──────────────
 git
+github-cli                   # the `gh` command
 base-devel                   # gcc, make, pkg-config wrappers
 rust                         # cargo — builds AgentTileCLI
 pkgconf
@@ -42,6 +43,5 @@ fuse2                        # StreamHub: AppImages need libfuse.so.2
 # Currently on your machine but not in the list you gave me. Uncomment
 # any you want on a fresh box.
 #chromium                    # second browser
-#github-cli                  # the `gh` command
 #xorg-server-xvfb            # headless X server (for testing GUI apps)
 #icewm                       # lightweight WM (pairs with Xvfb for testing)
