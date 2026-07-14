@@ -36,6 +36,14 @@ AGENTTILE_REPO="https://github.com/pl0xuee/agenttilecli.git"
 # step also installs a user service that reapplies it at login.
 POWER_PROFILE="performance"
 
+# KDE's Power Management page (System Settings → Power Management).
+#
+# Only the "AC" profile is set: a desktop has no other one. On a laptop the
+# Battery and Low Battery profiles are left at their defaults, which is what you
+# want — never suspending on battery is a good way to find a flat machine.
+SCREEN_OFF_MINS=10          # turn the screen off after this long idle
+SCREEN_OFF_LOCKED_MINS=1    # ...and this long after the session locks
+
 # Panel tweaks, taken from the real machine's plasma config rather than guessed.
 # A stock CachyOS panel is otherwise identical, so these are the only deltas.
 
@@ -744,6 +752,7 @@ configure_system() {
     ensure_path
 
     configure_power_profile
+    configure_powerdevil
     configure_brave_extensions
     configure_keepassxc_browser
     configure_taskbar
@@ -988,6 +997,86 @@ EOF
         warn "set '$POWER_PROFILE' for this boot, but couldn't enable the login service"
         report "Power" "'$POWER_PROFILE' set (will reset on reboot)"
     fi
+}
+
+# Stop the desktop putting itself to sleep behind your back.
+#
+# Distinct from configure_power_profile above: that one is the CPU's governor
+# (power-profiles-daemon), this is KDE's idle behaviour (powerdevil). The two are
+# unrelated and live in different places, despite both being "power" in the UI.
+#
+# The settings, in KDE's own words:
+#
+#   Suspend session, when inactive:  Do nothing
+#   Dim automatically:               Never
+#   Turn off screen:                 after SCREEN_OFF_MINS
+#     ...when locked:                after SCREEN_OFF_LOCKED_MINS
+#
+# A box that suspends mid-download, mid-build, or mid-stream is worse than
+# useless, and a desktop isn't running off a battery — but blanking the screen is
+# still worth having, since a static desktop left on for hours is how OLED panels
+# acquire a permanent taskbar.
+#
+# Everything else on that page (power button shows the logout screen, no profile
+# switching on idle) is already KDE's default, so it isn't written here: keys
+# absent from powerdevilrc mean "the default", and pinning them would only create
+# something to drift out of date the day KDE changes its mind.
+configure_powerdevil() {
+    local conf="$HOME/.config/powerdevilrc"
+
+    if ! have kwriteconfig6; then
+        warn "kwriteconfig6 not found — skipping the KDE power settings"
+        report "Power (KDE)" "SKIPPED (kwriteconfig6 missing)"
+        return
+    fi
+
+    local off=$(( SCREEN_OFF_MINS * 60 ))
+    local off_locked=$(( SCREEN_OFF_LOCKED_MINS * 60 ))
+
+    if [[ $DRY_RUN -eq 1 ]]; then
+        run "kwriteconfig6 --file $conf [AC][SuspendAndShutdown] AutoSuspendAction=0"
+        run "kwriteconfig6 --file $conf [AC][Display] no dimming, screen off after ${off}s (${off_locked}s locked)"
+        report "Power (KDE)" "would never suspend; screen off after ${SCREEN_OFF_MINS}m"
+        return
+    fi
+
+    # 0 is powerdevil's "do nothing" — the same value the GUI writes when you pick
+    # it from the dropdown. There's no separate "idle suspend off" switch.
+    kwriteconfig6 --file "$conf" --group AC --group SuspendAndShutdown \
+        --key AutoSuspendAction 0
+
+    # DimDisplayIdleTimeoutSec is dead while WhenIdle is false, but the KCM writes
+    # -1 next to it regardless, and matching it keeps this file identical to a
+    # hand-configured one. The `--` is load-bearing: without it kwriteconfig6
+    # reads the -1 as a command-line option and exits 1, which under set -e takes
+    # the whole run down with it.
+    kwriteconfig6 --file "$conf" --group AC --group Display \
+        --key DimDisplayWhenIdle --type bool false
+    kwriteconfig6 --file "$conf" --group AC --group Display \
+        --key DimDisplayIdleTimeoutSec -- -1
+
+    kwriteconfig6 --file "$conf" --group AC --group Display \
+        --key TurnOffDisplayWhenIdle --type bool true
+    kwriteconfig6 --file "$conf" --group AC --group Display \
+        --key TurnOffDisplayIdleTimeoutSec "$off"
+    kwriteconfig6 --file "$conf" --group AC --group Display \
+        --key TurnOffDisplayIdleTimeoutWhenLockedSec "$off_locked"
+
+    # powerdevil reads its config once at startup, so a running session keeps the
+    # old idle timers until told otherwise. Ask it to re-read them; if it isn't
+    # running (no desktop session — an SSH run, say) there's nothing to tell, and
+    # the file we just wrote is picked up at next login anyway.
+    if have qdbus6; then
+        qdbus6 org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement \
+            org.kde.Solid.PowerManagement.reparseConfiguration >/dev/null 2>&1 || true
+    else
+        dbus-send --session --type=method_call --dest=org.kde.Solid.PowerManagement \
+            /org/kde/Solid/PowerManagement \
+            org.kde.Solid.PowerManagement.reparseConfiguration >/dev/null 2>&1 || true
+    fi
+
+    ok "never suspends, never dims; screen off after ${SCREEN_OFF_MINS}m (${SCREEN_OFF_LOCKED_MINS}m locked)"
+    report "Power (KDE)" "no suspend, no dimming, screen off after ${SCREEN_OFF_MINS}m"
 }
 
 # Pin the taskbar launchers, in the order given in packages/taskbar.txt.

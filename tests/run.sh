@@ -170,6 +170,42 @@ check_eq "launchers are in the intended order" \
     "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop" \
     "${tb[*]}"
 
+# ── KDE power settings ────────────────────────────────────────────────────────
+group "KDE power settings (powerdevil)"
+
+if have kwriteconfig6; then
+    pd_home="$tmp/pdhome"; mkdir -p "$pd_home/.config"
+    ( HOME="$pd_home" DRY_RUN=0 configure_powerdevil ) >/dev/null 2>&1
+    pd="$(cat "$pd_home/.config/powerdevilrc" 2>/dev/null || true)"
+
+    # 0 is "do nothing". Any other value here means the machine suspends itself
+    # mid-build, which is the whole thing this setting exists to prevent.
+    check_contains "idle suspend is off"        "AutoSuspendAction=0"                  "$pd"
+    check_contains "dimming is off"             "DimDisplayWhenIdle=false"             "$pd"
+    check_contains "screen still turns off"     "TurnOffDisplayWhenIdle=true"          "$pd"
+    check_contains "screen off after 10m"       "TurnOffDisplayIdleTimeoutSec=600"     "$pd"
+    check_contains "screen off after 1m locked" "TurnOffDisplayIdleTimeoutWhenLockedSec=60" "$pd"
+
+    # Written under [AC], not at the top level: a key in the wrong group is
+    # silently ignored by powerdevil, so the file would look right and do nothing.
+    if grep -q '^\[AC\]\[Display\]' "$pd_home/.config/powerdevilrc" 2>/dev/null; then
+        pass "keys land in the [AC][Display] group"
+    else
+        fail "keys land in the [AC][Display] group" "$pd"
+    fi
+
+    # kwriteconfig6 parses a bare -1 as a command-line option and exits 1, which
+    # under set -e would take the entire run down. The `--` is what stops it.
+    if awk '/^configure_powerdevil\(\)/,/^}/' "$SCRIPT" | grep -q -- '--key DimDisplayIdleTimeoutSec -- -1'; then
+        pass "the negative dim timeout is passed after --"
+    else
+        fail "the negative dim timeout is passed after --" \
+             "a bare -1 makes kwriteconfig6 exit 1 and set -e kills the run"
+    fi
+else
+    printf '  %s·%s kwriteconfig6 not installed — skipping\n' "$DIM" "$RESET"
+fi
+
 # ── nothing may block on stdin ────────────────────────────────────────────────
 group "No step can hang waiting for input"
 
