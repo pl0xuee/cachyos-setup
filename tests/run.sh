@@ -78,6 +78,13 @@ else
          "a renamed asset would exit 1 with no message instead of the intended die"
 fi
 
+if awk '/^install_consolevault\(\)/,/^}/' "$SCRIPT" | grep -q 'grep -o .*_amd64.*|| true'; then
+    pass "ConsoleVault asset parsing survives a no-match (|| true)"
+else
+    fail "ConsoleVault asset parsing survives a no-match" \
+         "a renamed asset would exit 1 with no message instead of the intended die"
+fi
+
 # `--only` with no value: `shift 2` fails, set -e exits, user sees nothing.
 out="$(bash "$SCRIPT" --only 2>&1)"; rc=$?
 [[ $rc -ne 0 ]] && pass "--only with no value exits non-zero" || fail "--only with no value exits non-zero"
@@ -150,7 +157,7 @@ fi
 group "Taskbar launcher list"
 
 mapfile -t tb < <(read_list "$REPO_ROOT/packages/taskbar.txt")
-check_eq "taskbar.txt parses to 7 launchers" "7" "${#tb[@]}"
+check_eq "taskbar.txt parses to 8 launchers" "8" "${#tb[@]}"
 
 # Every entry must be a .desktop name — 'applications:' prefixes or bare app
 # names silently produce a dead tile rather than an error.
@@ -167,7 +174,7 @@ fi
 # The order IS the feature — assert it, so a careless edit that reshuffles the
 # list gets caught rather than silently rearranging the taskbar.
 check_eq "launchers are in the intended order" \
-    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop" \
+    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop" \
     "${tb[*]}"
 
 # ── KDE power settings ────────────────────────────────────────────────────────
@@ -321,6 +328,108 @@ else
     printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
 fi
 
+# ── ConsoleVault release-API parsing ──────────────────────────────────────────
+group "ConsoleVault release-API parsing"
+
+cv_release="$(curl -fsSL "https://api.github.com/repos/$CONSOLEVAULT_REPO/releases/latest" 2>/dev/null)"
+if [[ -z "$cv_release" ]]; then
+    fail "fetched the latest release" "empty response (rate-limited?)"
+else
+    pass "fetched the latest release"
+
+    cv_tag="$(printf '%s' "$cv_release" | grep -m1 '"tag_name"' | cut -d'"' -f4)"
+    # Same pattern the installer uses: the trailing quote is what excludes the
+    # sibling .AppImage.sig asset.
+    cv_url="$(printf '%s' "$cv_release" | grep -o 'https://[^"]*_amd64\.AppImage"' | head -1 | tr -d '"')"
+
+    [[ "$cv_tag" =~ ^v[0-9]+\.[0-9]+ ]] && pass "tag parses as a version ($cv_tag)" \
+                                        || fail "tag parses as a version" "$cv_tag"
+    check_contains "asset URL ends in _amd64.AppImage" "_amd64.AppImage" "$cv_url"
+    check_contains "asset URL is a GitHub download URL" "github.com" "$cv_url"
+
+    # The pattern must not pick up the detached signature as the download target.
+    if [[ "$cv_url" == *.sig ]]; then
+        fail "asset URL is the AppImage, not the .sig" "$cv_url"
+    else
+        pass "asset URL is the AppImage, not the .sig"
+    fi
+
+    code="$(curl -sIL -o /dev/null -w '%{http_code}' "$cv_url" 2>/dev/null)"
+    check_eq "asset URL is reachable (HTTP 200)" "200" "$code"
+fi
+
+# ── the AppImage is verified before it's made executable ──────────────────────
+group "ConsoleVault signature verification"
+
+# Same supply-chain concern as StreamHub: this binary is downloaded and then run
+# with the user's privileges, so verification can't be skippable.
+if grep -qF 'verify_consolevault "$tmp" "$url" ||' "$SCRIPT"; then
+    pass "download is verified before chmod +x"
+else
+    fail "download is verified before chmod +x" "the AppImage would be run unverified"
+fi
+
+# An unfetchable/undecodable signature must abort, not warn-and-continue.
+if awk '/^verify_consolevault\(\)/,/^}/' "$SCRIPT" | grep -q 'return 1'; then
+    pass "an unverifiable signature aborts rather than warning"
+else
+    fail "an unverifiable signature aborts rather than warning"
+fi
+
+# The public key is hard-coded, never fetched from the release host (which would
+# defeat the point). Prove nothing in the verify path pulls the key off the wire.
+if awk '/^verify_consolevault\(\)/,/^}/' "$SCRIPT" | grep -qi 'pubkey.*curl\|curl.*pubkey\|tauri.conf'; then
+    fail "public key is embedded, not fetched at runtime"
+else
+    pass "public key is embedded, not fetched at runtime"
+fi
+
+# And prove the real thing verifies: fetch the signed AppImage + its .sig and run
+# minisign against the embedded key. Skipped where minisign or the net is absent.
+if have minisign && [[ -n "${cv_tag:-}" && -n "${cv_url:-}" ]]; then
+    cvd="$(mktemp -d)"
+    if curl -fsSL "$cv_url" -o "$cvd/app.AppImage" 2>/dev/null \
+       && curl -fsSL "$cv_url.sig" 2>/dev/null | base64 -d > "$cvd/app.AppImage.minisig" 2>/dev/null; then
+        if minisign -Vm "$cvd/app.AppImage" -x "$cvd/app.AppImage.minisig" -P "$CONSOLEVAULT_PUBKEY" >/dev/null 2>&1; then
+            pass "real release verifies against the embedded public key"
+        else
+            fail "real release verifies against the embedded public key" "minisign rejected it"
+        fi
+    else
+        printf '  %s·%s couldn'\''t download the release — skipping live verify\n' "$DIM" "$RESET"
+    fi
+    rm -rf "$cvd"
+else
+    printf '  %s·%s minisign not installed — skipping live signature check\n' "$DIM" "$RESET"
+fi
+
+# ── generated .desktop file ───────────────────────────────────────────────────
+group "ConsoleVault .desktop file"
+
+APPS_DIR="$tmp"
+CONSOLEVAULT_APPIMAGE="/home/user/.local/bin/ConsoleVault.AppImage"
+CONSOLEVAULT_DIR="/home/user/.local/share/consolevault"
+write_consolevault_desktop
+
+cv_desktop="$tmp/com.consolevault.app.desktop"
+[[ -f "$cv_desktop" ]] && pass ".desktop file is written" || fail ".desktop file is written"
+cv_content="$(cat "$cv_desktop" 2>/dev/null || true)"
+
+check_contains "has [Desktop Entry] header" "[Desktop Entry]" "$cv_content"
+check_contains "Exec points at the AppImage" "Exec=$CONSOLEVAULT_APPIMAGE" "$cv_content"
+check_contains "Icon uses an absolute path"  "Icon=$CONSOLEVAULT_DIR/icon.png" "$cv_content"
+check_contains "Type=Application" "Type=Application" "$cv_content"
+
+if have desktop-file-validate; then
+    if err="$(desktop-file-validate "$cv_desktop" 2>&1)"; then
+        pass "passes desktop-file-validate"
+    else
+        fail "passes desktop-file-validate" "$err"
+    fi
+else
+    printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
+fi
+
 # ── --dry-run is genuinely inert ──────────────────────────────────────────────
 group "--dry-run changes nothing"
 
@@ -339,7 +448,7 @@ check_contains "--dry-run would clone AgentTileCLI" "[dry-run] git clone" "$out"
 check_contains "--dry-run never invokes sudo" "no sudo needed" "$out"
 
 # A dry run must not leave a half-downloaded AppImage anywhere.
-if [[ -e "$fake_home/.local/bin/StreamHub.AppImage" ]]; then
+if [[ -e "$fake_home/.local/bin/StreamHub.AppImage" || -e "$fake_home/.local/bin/ConsoleVault.AppImage" ]]; then
     fail "--dry-run downloads no AppImage"
 else
     pass "--dry-run downloads no AppImage"

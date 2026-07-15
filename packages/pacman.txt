@@ -37,7 +37,8 @@ gtk4                         # AgentTileCLI: GTK4 >= 4.12
 vte4                         # AgentTileCLI: terminal widget, VTE >= 0.65
 nodejs                       # StreamHub (only if building from source)
 npm
-fuse2                        # StreamHub: AppImages need libfuse.so.2
+fuse2                        # StreamHub + ConsoleVault: AppImages need libfuse.so.2
+minisign                     # verifies ConsoleVault's signed AppImage before it runs
 
 # ── Optional extras ───────────────────────────────────────────────────
 # Currently on your machine but not in the list you gave me. Uncomment

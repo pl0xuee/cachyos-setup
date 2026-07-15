@@ -32,6 +32,21 @@ STREAMHUB_APPIMAGE="$BIN_DIR/StreamHub.AppImage"   # unversioned name is deliber
 STREAMHUB_REPO="pl0xuee/StreamHub"
 AGENTTILE_REPO="https://github.com/pl0xuee/agenttilecli.git"
 
+# ConsoleVault is a Tauri app with the updater turned on, so like StreamHub it
+# replaces its own AppImage in place — same reason it lives under ~/.local/bin.
+# The release ships a versioned filename (ConsoleVault_x.y.z_amd64.AppImage); we
+# install it under a stable name because Tauri's updater overwrites whatever path
+# it's running from, and the .desktop launcher needs a filename that won't move.
+CONSOLEVAULT_DIR="$HOME/.local/share/consolevault"
+CONSOLEVAULT_APPIMAGE="$BIN_DIR/ConsoleVault.AppImage"
+CONSOLEVAULT_REPO="pl0xuee/ConsoleVault"
+# minisign public key, verbatim from the app's src-tauri/tauri.conf.json. It's
+# hard-coded rather than fetched at runtime on purpose: pulling the key from the
+# same GitHub release as the binary would "verify" a tampered download against a
+# tampered key, which is no verification at all. Bump this only if the app rotates
+# its signing key (and only from a source you trust, not the release page).
+CONSOLEVAULT_PUBKEY="RWRWvWU0rorx3lM6O7xZd/SBN3UzFI5a/fPThO4FQVe3iad5QNfwVo2J"
+
 # CPU power profile. power-profiles-daemon forgets this on reboot, so the config
 # step also installs a user service that reapplies it at login.
 POWER_PROFILE="performance"
@@ -87,7 +102,7 @@ else
     BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; RESET=""
 fi
 STEP_N=0
-STEP_TOTAL=6     # preflight + 5 steps; recalculated below if --only is used
+STEP_TOTAL=7     # preflight + 6 steps; recalculated below if --only is used
 
 step() {
     STEP_N=$((STEP_N + 1))
@@ -159,7 +174,7 @@ Usage: ./install.sh [options]
 Options:
   --dry-run       Print every command that would run, change nothing
   --only STEP     Run one step only:
-                    packages | flatpak | agenttilecli | streamhub | config
+                    packages | flatpak | agenttilecli | streamhub | consolevault | config
   --skip-upgrade  Don't run 'pacman -Syu' first (not recommended — see below)
   -h, --help      This message
 
@@ -185,7 +200,7 @@ while [[ $# -gt 0 ]]; do
         # Guard the arg count first: `shift 2` with only one argument left
         # returns non-zero, and set -e would then exit silently — no usage, no
         # error, nothing. `./install.sh --only` would just print nothing and fail.
-        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | config)"
+        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | config)"
                         ONLY="$2"; shift 2 ;;
         --skip-upgrade) SKIP_UPGRADE=1; shift ;;
         -h|--help)      usage; exit 0 ;;
@@ -195,8 +210,8 @@ done
 
 if [[ -n "$ONLY" ]]; then
     case "$ONLY" in
-        packages|flatpak|agenttilecli|streamhub|config) ;;
-        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | config" ;;
+        packages|flatpak|agenttilecli|streamhub|consolevault|config) ;;
+        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | config" ;;
     esac
 fi
 wanted() { [[ -z "$ONLY" || "$ONLY" == "$1" ]]; }
@@ -727,7 +742,142 @@ refresh_desktop_db() {
     return 0
 }
 
-# ── 5. system config ──────────────────────────────────────────────────────────
+# ── 5. ConsoleVault (prebuilt AppImage) ───────────────────────────────────────
+# A Tauri launcher for a physical ROM collection (SNES/N64/PS1/PS2/PS3). Like
+# StreamHub it's a self-updating AppImage fetched from GitHub Releases, so this
+# normally runs once but is version-stamped to pick up a newer release on re-run.
+install_consolevault() {
+    step "ConsoleVault"
+
+    local stamp="$CONSOLEVAULT_DIR/.version"
+    local release tag url
+
+    info "Checking latest release..."
+    release="$(curl -fsSL "https://api.github.com/repos/$CONSOLEVAULT_REPO/releases/latest")" \
+        || die "couldn't reach the GitHub releases API."
+    # `|| true` guards against grep's exit-1-on-no-match tripping pipefail+set -e
+    # before we can print the clear message below — same reasoning as StreamHub.
+    tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
+    # The trailing `"` in the pattern is what keeps this from also matching the
+    # sibling `..._amd64.AppImage.sig` asset URL.
+    url="$(printf '%s' "$release" | grep -o 'https://[^"]*_amd64\.AppImage"' | head -1 | tr -d '"' || true)"
+
+    [[ -n "$tag" ]] || die "couldn't read a tag from the latest release."
+    [[ -n "$url" ]] || die "no ConsoleVault _amd64.AppImage asset in release $tag."
+
+    if [[ -f "$CONSOLEVAULT_APPIMAGE" && -f "$stamp" ]] && [[ "$(cat "$stamp")" == "$tag" ]]; then
+        skip "ConsoleVault $tag already installed (it self-updates from here on)"
+
+        # Same launcher-repair logic as StreamHub: a matching version stamp would
+        # otherwise skip this step forever, stranding a deleted .desktop/icon.
+        if [[ ! -f "$APPS_DIR/com.consolevault.app.desktop" || ! -f "$CONSOLEVAULT_DIR/icon.png" ]]; then
+            info "Launcher missing — recreating it..."
+            mkdir -p "$APPS_DIR" "$CONSOLEVAULT_DIR"
+            [[ -f "$CONSOLEVAULT_DIR/icon.png" ]] || curl -fsSL -o "$CONSOLEVAULT_DIR/icon.png" \
+                "https://raw.githubusercontent.com/$CONSOLEVAULT_REPO/main/src-tauri/icons/icon.png" \
+                || warn "couldn't fetch the icon"
+            write_consolevault_desktop
+            refresh_desktop_db
+            ok "launcher recreated"
+        fi
+
+        report "ConsoleVault" "$tag already installed"
+        return
+    fi
+
+    run mkdir -p "$BIN_DIR" "$CONSOLEVAULT_DIR" "$APPS_DIR"
+
+    info "Downloading ConsoleVault $tag..."
+    # Temp file beside the target, moved into place only after it verifies — an
+    # interrupted download or a failed update never leaves a half-written or
+    # unverified AppImage where a runnable one used to be.
+    local tmp="$CONSOLEVAULT_APPIMAGE.partial"
+    if [[ $DRY_RUN -eq 1 ]]; then
+        run curl -fL --progress-bar -o "$tmp" "$url"
+        run "verify minisign signature against the embedded public key"
+        run chmod +x "$tmp"
+        run mv -f "$tmp" "$CONSOLEVAULT_APPIMAGE"
+        run curl -fsSL -o "$CONSOLEVAULT_DIR/icon.png" "https://raw.githubusercontent.com/$CONSOLEVAULT_REPO/main/src-tauri/icons/icon.png"
+        run "write $APPS_DIR/com.consolevault.app.desktop"
+        run "stamp version $tag"
+    else
+        curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
+
+        # Verify before making it executable. This is an 80MB binary pulled off
+        # the internet and then run with your user's full privileges. Tauri signs
+        # every release with minisign and embeds the matching public key in the
+        # app source, so there's no reason to trust the download blind. A bad
+        # signature means a corrupt or tampered asset — we stop, we don't chmod it.
+        verify_consolevault "$tmp" "$url" || { rm -f "$tmp"; die "ConsoleVault download could not be verified — refusing to install it."; }
+
+        chmod +x "$tmp"
+        mv -f "$tmp" "$CONSOLEVAULT_APPIMAGE"
+
+        curl -fsSL -o "$CONSOLEVAULT_DIR/icon.png" \
+            "https://raw.githubusercontent.com/$CONSOLEVAULT_REPO/main/src-tauri/icons/icon.png" \
+            || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
+
+        write_consolevault_desktop
+        printf '%s\n' "$tag" > "$stamp"
+        refresh_desktop_db
+    fi
+
+    ok "ConsoleVault $tag installed to $CONSOLEVAULT_APPIMAGE"
+    report "ConsoleVault" "$tag (prebuilt AppImage) → $CONSOLEVAULT_APPIMAGE"
+}
+
+# Verify the AppImage against the minisign signature the release publishes next to
+# it (…AppImage.sig), using the public key baked into this script. Returns
+# non-zero if the signature is missing, malformed, or doesn't match — "couldn't
+# check" is treated exactly like "failed", never like "passed".
+verify_consolevault() {
+    local file="$1" url="$2"
+
+    # minisign isn't in the CachyOS base install. It's listed in packages/pacman.txt
+    # so a normal run already has it, but `--only consolevault` can reach here
+    # without the packages step, so pull it in on the fly rather than failing.
+    if ! have minisign; then
+        info "Installing minisign (needed to verify the download)..."
+        run sudo pacman -S --needed --noconfirm minisign \
+            || { warn "couldn't install minisign — cannot verify the download"; return 1; }
+    fi
+
+    # Tauri publishes the .sig as base64 of the actual minisign signature file, so
+    # it has to be decoded before minisign will read it.
+    local sig="$file.minisig"
+    curl -fsSL "$url.sig" 2>/dev/null | base64 -d > "$sig" 2>/dev/null \
+        || { warn "couldn't fetch/decode the .sig — cannot verify the download"; rm -f "$sig"; return 1; }
+    [[ -s "$sig" ]] || { warn "empty signature — cannot verify the download"; rm -f "$sig"; return 1; }
+
+    # -P takes the public key string directly, so there's no temp keyfile to clean
+    # up. minisign auto-detects the prehashed (Tauri) signature format.
+    if minisign -Vm "$file" -x "$sig" -P "$CONSOLEVAULT_PUBKEY" >/dev/null 2>&1; then
+        rm -f "$sig"
+        ok "signature verified (minisign)"
+        return 0
+    fi
+
+    rm -f "$sig"
+    warn "SIGNATURE MISMATCH — the download does not match the published minisign signature"
+    return 1
+}
+
+write_consolevault_desktop() {
+    cat > "$APPS_DIR/com.consolevault.app.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=ConsoleVault
+Comment=Launcher for your own physical ROM collection (SNES, N64, PS1, PS2, PS3)
+Exec=$CONSOLEVAULT_APPIMAGE
+Icon=$CONSOLEVAULT_DIR/icon.png
+Terminal=false
+Categories=Game;Emulator;
+StartupNotify=true
+StartupWMClass=ConsoleVault
+EOF
+}
+
+# ── 6. system config ──────────────────────────────────────────────────────────
 configure_system() {
     step "System config"
 
@@ -1350,6 +1500,7 @@ main() {
     wanted flatpak      && install_flatpaks
     wanted agenttilecli && install_agenttilecli
     wanted streamhub    && install_streamhub
+    wanted consolevault && install_consolevault
     wanted config       && configure_system
 
     if [[ $DRY_RUN -eq 1 ]]; then
@@ -1385,6 +1536,7 @@ main() {
     printf '\n%s  Run them%s\n' "$BOLD" "$RESET"
     printf '    %sagenttilecli%s          tiling terminal for AI CLI sessions\n' "$BOLD" "$RESET"
     printf '    %sStreamHub.AppImage%s    Netflix / Prime / Disney+ in one app\n' "$BOLD" "$RESET"
+    printf '    %sConsoleVault.AppImage%s ROM-collection launcher (SNES → PS3)\n' "$BOLD" "$RESET"
     printf '    %s(or find everything in the app menu)%s\n\n' "$DIM" "$RESET"
 }
 
