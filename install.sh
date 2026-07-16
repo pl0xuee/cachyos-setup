@@ -47,6 +47,18 @@ CONSOLEVAULT_REPO="pl0xuee/ConsoleVault"
 # its signing key (and only from a source you trust, not the release page).
 CONSOLEVAULT_PUBKEY="RWRWvWU0rorx3lM6O7xZd/SBN3UzFI5a/fPThO4FQVe3iad5QNfwVo2J"
 
+# Disc Ripper is a PySide6/Qt AppImage that auto-rips DVDs/Blu-rays to H.265. Like
+# the other two it's fetched from GitHub Releases under a stable filename and lives
+# in ~/.local/bin. Unlike them the release publishes no signature or checksum asset
+# — only the AppImage and its .zsync — so the download is verified against the
+# full-file SHA-1 and length carried in that .zsync header. That's an integrity
+# check, not a signature: the .zsync rides in the same release, so it catches a
+# corrupt or truncated download, not a maliciously swapped release. It's the
+# strongest check the release offers, and still beats running the binary unchecked.
+DISCRIPPER_DIR="$HOME/.local/share/discripper"
+DISCRIPPER_APPIMAGE="$BIN_DIR/DiscRipper.AppImage"
+DISCRIPPER_REPO="pl0xuee/discripper"
+
 # CPU power profile. power-profiles-daemon forgets this on reboot, so the config
 # step also installs a user service that reapplies it at login.
 POWER_PROFILE="performance"
@@ -102,7 +114,7 @@ else
     BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; RESET=""
 fi
 STEP_N=0
-STEP_TOTAL=7     # preflight + 6 steps; recalculated below if --only is used
+STEP_TOTAL=8     # preflight + 7 steps; recalculated below if --only is used
 
 step() {
     STEP_N=$((STEP_N + 1))
@@ -174,7 +186,7 @@ Usage: ./install.sh [options]
 Options:
   --dry-run       Print every command that would run, change nothing
   --only STEP     Run one step only:
-                    packages | flatpak | agenttilecli | streamhub | consolevault | config
+                    packages | flatpak | agenttilecli | streamhub | consolevault | discripper | config
   --skip-upgrade  Don't run 'pacman -Syu' first (not recommended — see below)
   -h, --help      This message
 
@@ -200,7 +212,7 @@ while [[ $# -gt 0 ]]; do
         # Guard the arg count first: `shift 2` with only one argument left
         # returns non-zero, and set -e would then exit silently — no usage, no
         # error, nothing. `./install.sh --only` would just print nothing and fail.
-        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | config)"
+        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | config)"
                         ONLY="$2"; shift 2 ;;
         --skip-upgrade) SKIP_UPGRADE=1; shift ;;
         -h|--help)      usage; exit 0 ;;
@@ -210,8 +222,8 @@ done
 
 if [[ -n "$ONLY" ]]; then
     case "$ONLY" in
-        packages|flatpak|agenttilecli|streamhub|consolevault|config) ;;
-        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | config" ;;
+        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|config) ;;
+        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | config" ;;
     esac
 fi
 wanted() { [[ -z "$ONLY" || "$ONLY" == "$1" ]]; }
@@ -877,7 +889,145 @@ StartupWMClass=ConsoleVault
 EOF
 }
 
-# ── 6. system config ──────────────────────────────────────────────────────────
+# ── 6. Disc Ripper (prebuilt AppImage) ────────────────────────────────────────
+# A PySide6/Qt app that auto-detects a disc, rips it to H.265 and names the output
+# for Plex/Jellyfin. Same shape as StreamHub/ConsoleVault — a GitHub-Releases
+# AppImage under a stable name — but its release ships no signature or checksum, so
+# it's verified against the SHA-1/length in the sibling .zsync (integrity, not a
+# signature; see the note by DISCRIPPER_* above). Version-stamped so a re-run picks
+# up a newer release.
+install_discripper() {
+    step "Disc Ripper"
+
+    local stamp="$DISCRIPPER_DIR/.version"
+    local release tag url
+
+    info "Checking latest release..."
+    release="$(curl -fsSL "https://api.github.com/repos/$DISCRIPPER_REPO/releases/latest")" \
+        || die "couldn't reach the GitHub releases API."
+    # `|| true` guards against grep's exit-1-on-no-match tripping pipefail+set -e
+    # before the clear messages below can run — same reasoning as StreamHub.
+    tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
+    # The trailing `"` keeps this from also matching the sibling ...AppImage.zsync
+    # asset URL, whose value continues past `.AppImage` before its closing quote.
+    url="$(printf '%s' "$release" | grep -o 'https://[^"]*/DiscRipper\.AppImage"' | head -1 | tr -d '"' || true)"
+
+    [[ -n "$tag" ]] || die "couldn't read a tag from the latest release."
+    [[ -n "$url" ]] || die "no DiscRipper.AppImage asset in release $tag."
+
+    if [[ -f "$DISCRIPPER_APPIMAGE" && -f "$stamp" ]] && [[ "$(cat "$stamp")" == "$tag" ]]; then
+        skip "Disc Ripper $tag already installed"
+
+        # Same launcher-repair path as the others: a matching stamp would otherwise
+        # skip this step forever, stranding a deleted .desktop or icon.
+        if [[ ! -f "$APPS_DIR/com.discripper.app.desktop" || ! -f "$DISCRIPPER_DIR/icon.png" ]]; then
+            info "Launcher missing — recreating it..."
+            mkdir -p "$APPS_DIR" "$DISCRIPPER_DIR"
+            [[ -f "$DISCRIPPER_DIR/icon.png" ]] || curl -fsSL -o "$DISCRIPPER_DIR/icon.png" \
+                "https://raw.githubusercontent.com/$DISCRIPPER_REPO/main/src/discripper/resources/icon.png" \
+                || warn "couldn't fetch the icon"
+            write_discripper_desktop
+            refresh_desktop_db
+            ok "launcher recreated"
+        fi
+
+        report "Disc Ripper" "$tag already installed"
+        return
+    fi
+
+    run mkdir -p "$BIN_DIR" "$DISCRIPPER_DIR" "$APPS_DIR"
+
+    info "Downloading Disc Ripper $tag..."
+    # Temp file beside the target, moved into place only after it verifies — an
+    # interrupted download never leaves a half-written AppImage where a runnable
+    # one used to be.
+    local tmp="$DISCRIPPER_APPIMAGE.partial"
+    if [[ $DRY_RUN -eq 1 ]]; then
+        run curl -fL --progress-bar -o "$tmp" "$url"
+        run "verify sha1/length against the release's DiscRipper.AppImage.zsync"
+        run chmod +x "$tmp"
+        run mv -f "$tmp" "$DISCRIPPER_APPIMAGE"
+        run curl -fsSL -o "$DISCRIPPER_DIR/icon.png" "https://raw.githubusercontent.com/$DISCRIPPER_REPO/main/src/discripper/resources/icon.png"
+        run "write $APPS_DIR/com.discripper.app.desktop"
+        run "stamp version $tag"
+    else
+        curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
+
+        # Verify before making it executable. This is an 80MB binary pulled off the
+        # internet and then run with your user's full privileges. The release has no
+        # signature to check, but the .zsync header records the full file's SHA-1
+        # and length; a mismatch means a corrupt or truncated download and we stop
+        # rather than chmod it. (This does not defend against a swapped release —
+        # the .zsync comes from the same one — only against a broken transfer.)
+        verify_discripper "$tmp" "$tag" || { rm -f "$tmp"; die "Disc Ripper download could not be verified — refusing to install it."; }
+
+        chmod +x "$tmp"
+        mv -f "$tmp" "$DISCRIPPER_APPIMAGE"
+
+        curl -fsSL -o "$DISCRIPPER_DIR/icon.png" \
+            "https://raw.githubusercontent.com/$DISCRIPPER_REPO/main/src/discripper/resources/icon.png" \
+            || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
+
+        write_discripper_desktop
+        printf '%s\n' "$tag" > "$stamp"
+        refresh_desktop_db
+    fi
+
+    ok "Disc Ripper $tag installed to $DISCRIPPER_APPIMAGE"
+    report "Disc Ripper" "$tag (prebuilt AppImage) → $DISCRIPPER_APPIMAGE"
+}
+
+# Verify the AppImage against the SHA-1 and length recorded in its sibling .zsync
+# header (the release ships no .sig or checksum file). Returns non-zero if the
+# .zsync can't be fetched or the digest doesn't match — "couldn't check" is treated
+# as "failed", never as "passed".
+verify_discripper() {
+    local file="$1" tag="$2"
+    local zsync="$file.zsync" header expected_sha expected_len actual_sha actual_len
+
+    curl -fsSL -o "$zsync" \
+        "https://github.com/$DISCRIPPER_REPO/releases/download/$tag/DiscRipper.AppImage.zsync" 2>/dev/null \
+        || { warn "couldn't fetch the .zsync — cannot verify the download"; rm -f "$zsync"; return 1; }
+
+    # The .zsync is plain-text header lines, then a blank line, then a binary block.
+    # sed quits at that blank line so the binary is never fed into the field parse.
+    header="$(sed '/^$/q' "$zsync")"
+    rm -f "$zsync"
+
+    expected_sha="$(printf '%s\n' "$header" | grep -m1 '^SHA-1:' | awk '{print $2}')"
+    expected_len="$(printf '%s\n' "$header" | grep -m1 '^Length:' | awk '{print $2}')"
+    [[ -n "$expected_sha" ]] || { warn "no SHA-1 in the .zsync header — cannot verify"; return 1; }
+
+    actual_sha="$(sha1sum "$file" | awk '{print $1}')"
+    actual_len="$(stat -c%s "$file")"
+
+    if [[ "$actual_sha" == "$expected_sha" && "$actual_len" == "$expected_len" ]]; then
+        ok "checksum verified (sha1, from .zsync)"
+        return 0
+    fi
+
+    warn "CHECKSUM MISMATCH — the download does not match the .zsync header"
+    warn "  expected: $expected_sha ($expected_len bytes)"
+    warn "  got:      $actual_sha ($actual_len bytes)"
+    return 1
+}
+
+write_discripper_desktop() {
+    cat > "$APPS_DIR/com.discripper.app.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Disc Ripper
+Comment=Auto-rip DVDs/Blu-rays to H.265 with Plex/Jellyfin naming
+Exec=$DISCRIPPER_APPIMAGE
+Icon=$DISCRIPPER_DIR/icon.png
+Terminal=false
+Categories=AudioVideo;Video;
+StartupNotify=true
+StartupWMClass=discripper
+EOF
+}
+
+# ── 7. system config ──────────────────────────────────────────────────────────
 configure_system() {
     step "System config"
 
@@ -1501,6 +1651,7 @@ main() {
     wanted agenttilecli && install_agenttilecli
     wanted streamhub    && install_streamhub
     wanted consolevault && install_consolevault
+    wanted discripper   && install_discripper
     wanted config       && configure_system
 
     if [[ $DRY_RUN -eq 1 ]]; then
@@ -1537,6 +1688,7 @@ main() {
     printf '    %sagenttilecli%s          tiling terminal for AI CLI sessions\n' "$BOLD" "$RESET"
     printf '    %sStreamHub.AppImage%s    Netflix / Prime / Disney+ in one app\n' "$BOLD" "$RESET"
     printf '    %sConsoleVault.AppImage%s ROM-collection launcher (SNES → PS3)\n' "$BOLD" "$RESET"
+    printf '    %sDiscRipper.AppImage%s   auto-rip DVDs/Blu-rays to H.265 (Plex/Jellyfin)\n' "$BOLD" "$RESET"
     printf '    %s(or find everything in the app menu)%s\n\n' "$DIM" "$RESET"
 }
 

@@ -85,6 +85,27 @@ else
          "a renamed asset would exit 1 with no message instead of the intended die"
 fi
 
+if awk '/^install_discripper\(\)/,/^}/' "$SCRIPT" | grep -q 'grep -o .*DiscRipper.*|| true'; then
+    pass "Disc Ripper asset parsing survives a no-match (|| true)"
+else
+    fail "Disc Ripper asset parsing survives a no-match" \
+         "a renamed asset would exit 1 with no message instead of the intended die"
+fi
+
+# Disc Ripper's release has no signature/checksum asset — it verifies against the
+# .zsync's SHA-1/length. Assert the verify step exists and is actually wired into
+# the install path, so a refactor can't quietly drop the only integrity check.
+if awk '/^verify_discripper\(\)/,/^}/' "$SCRIPT" | grep -q 'sha1sum'; then
+    pass "Disc Ripper verifies the download against the .zsync sha1"
+else
+    fail "Disc Ripper verifies the download" "verify_discripper no longer checks a sha1"
+fi
+if awk '/^install_discripper\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_discripper .* || .*die'; then
+    pass "Disc Ripper aborts the install on a failed verify"
+else
+    fail "Disc Ripper aborts on failed verify" "the download is chmod'd without a passing verify"
+fi
+
 # `--only` with no value: `shift 2` fails, set -e exits, user sees nothing.
 out="$(bash "$SCRIPT" --only 2>&1)"; rc=$?
 [[ $rc -ne 0 ]] && pass "--only with no value exits non-zero" || fail "--only with no value exits non-zero"
@@ -157,7 +178,7 @@ fi
 group "Taskbar launcher list"
 
 mapfile -t tb < <(read_list "$REPO_ROOT/packages/taskbar.txt")
-check_eq "taskbar.txt parses to 8 launchers" "8" "${#tb[@]}"
+check_eq "taskbar.txt parses to 9 launchers" "9" "${#tb[@]}"
 
 # Every entry must be a .desktop name — 'applications:' prefixes or bare app
 # names silently produce a dead tile rather than an error.
@@ -174,7 +195,7 @@ fi
 # The order IS the feature — assert it, so a careless edit that reshuffles the
 # list gets caught rather than silently rearranging the taskbar.
 check_eq "launchers are in the intended order" \
-    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop" \
+    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop com.discripper.app.desktop" \
     "${tb[*]}"
 
 # ── KDE power settings ────────────────────────────────────────────────────────

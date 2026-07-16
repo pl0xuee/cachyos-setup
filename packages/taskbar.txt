@@ -15,3 +15,4 @@ org.kde.dolphin.desktop                 # Dolphin (file manager)
 dev.agenttilecli.AgentTileCli.desktop   # AgentTileCLI
 com.streamhub.app.desktop               # StreamHub
 com.consolevault.app.desktop            # ConsoleVault
+com.discripper.app.desktop              # Disc Ripper
