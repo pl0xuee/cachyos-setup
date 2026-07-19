@@ -6,6 +6,7 @@
 vesktop                      # Discord client
 brave-origin-bin             # Brave browser
 keepassxc                    # Password manager
+proton-vpn-gtk-app           # ProtonVPN client
 gnome-disk-utility           # Disk management GUI
 lact                         # AMD GPU control (fan curves, undervolt)
 # freerdp is only an *optional* dep of remmina, so it has to be named
