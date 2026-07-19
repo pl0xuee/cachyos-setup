@@ -16,3 +16,5 @@ dev.agenttilecli.AgentTileCli.desktop   # AgentTileCLI
 com.streamhub.app.desktop               # StreamHub
 com.consolevault.app.desktop            # ConsoleVault
 com.discripper.app.desktop              # Disc Ripper
+com.griddown.app.desktop                # GridDown
+com.dreadkeep.castle.desktop            # Castle of the Dreadkeep

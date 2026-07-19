@@ -59,6 +59,31 @@ DISCRIPPER_DIR="$HOME/.local/share/discripper"
 DISCRIPPER_APPIMAGE="$BIN_DIR/DiscRipper.AppImage"
 DISCRIPPER_REPO="pl0xuee/discripper"
 
+# GridDown is a Tauri app (offline US maps — streets, forest roads, trails), so it
+# follows ConsoleVault exactly: updater enabled, replaces its own AppImage in place,
+# release ships a versioned name (GridDown_x.y.z_amd64.AppImage) that we install
+# under a stable one. Note the repo's default branch is master, not main.
+GRIDDOWN_DIR="$HOME/.local/share/griddown"
+GRIDDOWN_APPIMAGE="$BIN_DIR/GridDown.AppImage"
+GRIDDOWN_REPO="pl0xuee/griddown"
+GRIDDOWN_BRANCH="master"
+# minisign public key from the app's src-tauri/tauri.conf.json. Tauri stores it
+# there base64-encoded (the whole key *file*); this is the decoded key line, which
+# is what `minisign -P` wants. Hard-coded for the same reason as ConsoleVault's:
+# a key fetched from the release it's meant to vouch for proves nothing.
+GRIDDOWN_PUBKEY="RWR4H5doHqJ0FJLVbBQvbrbWfmA74M7CFZWb4R7gejBvNR3iwMMe28Je"
+
+# Castle of the Dreadkeep is an Electron/electron-builder game (Three.js raycaster).
+# electron-updater replaces the AppImage in place, so same stable path under
+# ~/.local/bin. Its release publishes no signature, but electron-builder writes a
+# latest-linux.yml carrying the AppImage's sha512 and size — verified below. Like
+# Disc Ripper's .zsync that's an integrity check, not a signature: the yml ships in
+# the same release, so it catches a corrupt or truncated download, not a swapped
+# one. Its AppImage asset is already unversioned (artifactName: ${name}.AppImage).
+DREADKEEP_DIR="$HOME/.local/share/dreadkeep"
+DREADKEEP_APPIMAGE="$BIN_DIR/CastleOfTheDreadkeep.AppImage"
+DREADKEEP_REPO="pl0xuee/castle-of-the-dreadkeep"
+
 # CPU power profile. power-profiles-daemon forgets this on reboot, so the config
 # step also installs a user service that reapplies it at login.
 POWER_PROFILE="performance"
@@ -114,7 +139,7 @@ else
     BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; RESET=""
 fi
 STEP_N=0
-STEP_TOTAL=8     # preflight + 7 steps; recalculated below if --only is used
+STEP_TOTAL=10    # preflight + 9 steps; recalculated below if --only is used
 
 step() {
     STEP_N=$((STEP_N + 1))
@@ -186,7 +211,8 @@ Usage: ./install.sh [options]
 Options:
   --dry-run       Print every command that would run, change nothing
   --only STEP     Run one step only:
-                    packages | flatpak | agenttilecli | streamhub | consolevault | discripper | config
+                    packages | flatpak | agenttilecli | streamhub | consolevault
+                    discripper | griddown | dreadkeep | config
   --skip-upgrade  Don't run 'pacman -Syu' first (not recommended — see below)
   -h, --help      This message
 
@@ -212,7 +238,7 @@ while [[ $# -gt 0 ]]; do
         # Guard the arg count first: `shift 2` with only one argument left
         # returns non-zero, and set -e would then exit silently — no usage, no
         # error, nothing. `./install.sh --only` would just print nothing and fail.
-        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | config)"
+        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | config)"
                         ONLY="$2"; shift 2 ;;
         --skip-upgrade) SKIP_UPGRADE=1; shift ;;
         -h|--help)      usage; exit 0 ;;
@@ -222,8 +248,8 @@ done
 
 if [[ -n "$ONLY" ]]; then
     case "$ONLY" in
-        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|config) ;;
-        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | config" ;;
+        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|griddown|dreadkeep|config) ;;
+        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | config" ;;
     esac
 fi
 wanted() { [[ -z "$ONLY" || "$ONLY" == "$1" ]]; }
@@ -1027,7 +1053,280 @@ StartupWMClass=discripper
 EOF
 }
 
-# ── 7. system config ──────────────────────────────────────────────────────────
+# ── 7. GridDown (prebuilt AppImage) ───────────────────────────────────────────
+# Offline US maps — streets, forest service roads, trails and terrain that work with
+# no internet. Same shape as ConsoleVault (Tauri, updater on, minisign-signed
+# release), so the download is checked against the embedded public key before it's
+# made executable. Version-stamped so a re-run picks up a newer release.
+install_griddown() {
+    step "GridDown"
+
+    local stamp="$GRIDDOWN_DIR/.version"
+    local release tag url http
+
+    info "Checking latest release..."
+    # -w appends the status on its own line so "no releases published yet" (404)
+    # can be told apart from a genuine network/API failure. Without that split,
+    # -f collapses both into one exit code and the step below can't react.
+    release="$(curl -sSL -w '\n%{http_code}' "https://api.github.com/repos/$GRIDDOWN_REPO/releases/latest")" \
+        || die "couldn't reach the GitHub releases API."
+    http="${release##*$'\n'}"
+    release="${release%$'\n'*}"
+
+    # GridDown is the newest of these apps and may not have cut its first release
+    # yet. That's a "not ready", not a "something is broken" — warn and move on so
+    # the remaining steps (including system config) still run. Every other failure
+    # below, including a release whose asset is missing or unverifiable, still dies.
+    if [[ "$http" == "404" ]]; then
+        warn "GridDown has no published release yet — skipping (re-run this later to pick it up)"
+        report "GridDown" "skipped — no published release yet"
+        return 0
+    fi
+    [[ "$http" == "200" ]] || die "GitHub releases API returned HTTP $http."
+    # `|| true` guards against grep's exit-1-on-no-match tripping pipefail+set -e
+    # before the clear messages below can run — same reasoning as StreamHub.
+    tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
+    # The trailing `"` is what keeps this from also matching the sibling
+    # ..._amd64.AppImage.sig asset URL.
+    url="$(printf '%s' "$release" | grep -o 'https://[^"]*_amd64\.AppImage"' | head -1 | tr -d '"' || true)"
+
+    [[ -n "$tag" ]] || die "couldn't read a tag from the latest release."
+    [[ -n "$url" ]] || die "no GridDown _amd64.AppImage asset in release $tag."
+
+    if [[ -f "$GRIDDOWN_APPIMAGE" && -f "$stamp" ]] && [[ "$(cat "$stamp")" == "$tag" ]]; then
+        skip "GridDown $tag already installed (it self-updates from here on)"
+
+        # Same launcher-repair path as the others: a matching stamp would otherwise
+        # skip this step forever, stranding a deleted .desktop or icon.
+        if [[ ! -f "$APPS_DIR/com.griddown.app.desktop" || ! -f "$GRIDDOWN_DIR/icon.png" ]]; then
+            info "Launcher missing — recreating it..."
+            mkdir -p "$APPS_DIR" "$GRIDDOWN_DIR"
+            [[ -f "$GRIDDOWN_DIR/icon.png" ]] || curl -fsSL -o "$GRIDDOWN_DIR/icon.png" \
+                "https://raw.githubusercontent.com/$GRIDDOWN_REPO/$GRIDDOWN_BRANCH/src-tauri/icons/icon.png" \
+                || warn "couldn't fetch the icon"
+            write_griddown_desktop
+            refresh_desktop_db
+            ok "launcher recreated"
+        fi
+
+        report "GridDown" "$tag already installed"
+        return
+    fi
+
+    run mkdir -p "$BIN_DIR" "$GRIDDOWN_DIR" "$APPS_DIR"
+
+    info "Downloading GridDown $tag..."
+    # Temp file beside the target, moved into place only after it verifies — an
+    # interrupted or unverifiable download never replaces a working AppImage.
+    local tmp="$GRIDDOWN_APPIMAGE.partial"
+    if [[ $DRY_RUN -eq 1 ]]; then
+        run curl -fL --progress-bar -o "$tmp" "$url"
+        run "verify minisign signature against the embedded public key"
+        run chmod +x "$tmp"
+        run mv -f "$tmp" "$GRIDDOWN_APPIMAGE"
+        run curl -fsSL -o "$GRIDDOWN_DIR/icon.png" "https://raw.githubusercontent.com/$GRIDDOWN_REPO/$GRIDDOWN_BRANCH/src-tauri/icons/icon.png"
+        run "write $APPS_DIR/com.griddown.app.desktop"
+        run "stamp version $tag"
+    else
+        curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
+
+        # Verify before making it executable — same stance as ConsoleVault: this is
+        # a binary off the internet about to run with your user's privileges, and
+        # Tauri signs every release, so there's no reason to trust it blind.
+        verify_griddown "$tmp" "$url" || { rm -f "$tmp"; die "GridDown download could not be verified — refusing to install it."; }
+
+        chmod +x "$tmp"
+        mv -f "$tmp" "$GRIDDOWN_APPIMAGE"
+
+        curl -fsSL -o "$GRIDDOWN_DIR/icon.png" \
+            "https://raw.githubusercontent.com/$GRIDDOWN_REPO/$GRIDDOWN_BRANCH/src-tauri/icons/icon.png" \
+            || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
+
+        write_griddown_desktop
+        printf '%s\n' "$tag" > "$stamp"
+        refresh_desktop_db
+    fi
+
+    ok "GridDown $tag installed to $GRIDDOWN_APPIMAGE"
+    report "GridDown" "$tag (prebuilt AppImage) → $GRIDDOWN_APPIMAGE"
+}
+
+# Verify the AppImage against the minisign signature published beside it
+# (…AppImage.sig), using the key baked into this script. Returns non-zero if the
+# signature is missing, malformed or doesn't match — "couldn't check" is treated
+# exactly like "failed", never like "passed".
+verify_griddown() {
+    local file="$1" url="$2"
+
+    # minisign is in packages/pacman.txt (for ConsoleVault), but `--only griddown`
+    # can reach here without the packages step, so pull it in rather than failing.
+    if ! have minisign; then
+        info "Installing minisign (needed to verify the download)..."
+        run sudo pacman -S --needed --noconfirm minisign \
+            || { warn "couldn't install minisign — cannot verify the download"; return 1; }
+    fi
+
+    # Tauri publishes the .sig as base64 of the actual minisign signature file, so
+    # it has to be decoded before minisign will read it.
+    local sig="$file.minisig"
+    curl -fsSL "$url.sig" 2>/dev/null | base64 -d > "$sig" 2>/dev/null \
+        || { warn "couldn't fetch/decode the .sig — cannot verify the download"; rm -f "$sig"; return 1; }
+    [[ -s "$sig" ]] || { warn "empty signature — cannot verify the download"; rm -f "$sig"; return 1; }
+
+    if minisign -Vm "$file" -x "$sig" -P "$GRIDDOWN_PUBKEY" >/dev/null 2>&1; then
+        rm -f "$sig"
+        ok "signature verified (minisign)"
+        return 0
+    fi
+
+    rm -f "$sig"
+    warn "SIGNATURE MISMATCH — the download does not match the published minisign signature"
+    return 1
+}
+
+write_griddown_desktop() {
+    cat > "$APPS_DIR/com.griddown.app.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=GridDown
+Comment=Offline US maps — streets, forest service roads, trails and terrain
+Exec=$GRIDDOWN_APPIMAGE
+Icon=$GRIDDOWN_DIR/icon.png
+Terminal=false
+Categories=Utility;Maps;Education;
+StartupNotify=true
+StartupWMClass=GridDown
+EOF
+}
+
+# ── 8. Castle of the Dreadkeep (prebuilt AppImage) ────────────────────────────
+# A procedural medieval castle crawler (retro raycaster FPS, Three.js in Electron).
+# Same GitHub-Releases-AppImage shape as the others, but electron-builder rather
+# than Tauri: no signature, so it's verified against the sha512 and size in the
+# release's latest-linux.yml (integrity, not a signature — see the note by
+# DREADKEEP_* above). Version-stamped so a re-run picks up a newer release.
+install_dreadkeep() {
+    step "Castle of the Dreadkeep"
+
+    local stamp="$DREADKEEP_DIR/.version"
+    local release tag url
+
+    info "Checking latest release..."
+    release="$(curl -fsSL "https://api.github.com/repos/$DREADKEEP_REPO/releases/latest")" \
+        || die "couldn't reach the GitHub releases API."
+    tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
+    # Unversioned asset name (artifactName: ${name}.AppImage). The trailing `"`
+    # keeps this off any sibling .AppImage.blockmap URL.
+    url="$(printf '%s' "$release" | grep -o 'https://[^"]*/castle-of-the-dreadkeep\.AppImage"' | head -1 | tr -d '"' || true)"
+
+    [[ -n "$tag" ]] || die "couldn't read a tag from the latest release."
+    [[ -n "$url" ]] || die "no castle-of-the-dreadkeep.AppImage asset in release $tag."
+
+    if [[ -f "$DREADKEEP_APPIMAGE" && -f "$stamp" ]] && [[ "$(cat "$stamp")" == "$tag" ]]; then
+        skip "Castle of the Dreadkeep $tag already installed"
+
+        if [[ ! -f "$APPS_DIR/com.dreadkeep.castle.desktop" || ! -f "$DREADKEEP_DIR/icon.png" ]]; then
+            info "Launcher missing — recreating it..."
+            mkdir -p "$APPS_DIR" "$DREADKEEP_DIR"
+            [[ -f "$DREADKEEP_DIR/icon.png" ]] || curl -fsSL -o "$DREADKEEP_DIR/icon.png" \
+                "https://raw.githubusercontent.com/$DREADKEEP_REPO/main/build/icon.png" \
+                || warn "couldn't fetch the icon"
+            write_dreadkeep_desktop
+            refresh_desktop_db
+            ok "launcher recreated"
+        fi
+
+        report "Castle of the Dreadkeep" "$tag already installed"
+        return
+    fi
+
+    run mkdir -p "$BIN_DIR" "$DREADKEEP_DIR" "$APPS_DIR"
+
+    info "Downloading Castle of the Dreadkeep $tag..."
+    local tmp="$DREADKEEP_APPIMAGE.partial"
+    if [[ $DRY_RUN -eq 1 ]]; then
+        run curl -fL --progress-bar -o "$tmp" "$url"
+        run "verify sha512/size against the release's latest-linux.yml"
+        run chmod +x "$tmp"
+        run mv -f "$tmp" "$DREADKEEP_APPIMAGE"
+        run curl -fsSL -o "$DREADKEEP_DIR/icon.png" "https://raw.githubusercontent.com/$DREADKEEP_REPO/main/build/icon.png"
+        run "write $APPS_DIR/com.dreadkeep.castle.desktop"
+        run "stamp version $tag"
+    else
+        curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
+
+        # Verify before chmod, same as the others. There's no signature to check,
+        # but electron-builder records the sha512 and size in latest-linux.yml; a
+        # mismatch means a corrupt or truncated download and we stop rather than
+        # make it executable. (Same release as the binary, so this catches a broken
+        # transfer, not a maliciously swapped release.)
+        verify_dreadkeep "$tmp" "$tag" || { rm -f "$tmp"; die "Castle of the Dreadkeep download could not be verified — refusing to install it."; }
+
+        chmod +x "$tmp"
+        mv -f "$tmp" "$DREADKEEP_APPIMAGE"
+
+        curl -fsSL -o "$DREADKEEP_DIR/icon.png" \
+            "https://raw.githubusercontent.com/$DREADKEEP_REPO/main/build/icon.png" \
+            || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
+
+        write_dreadkeep_desktop
+        printf '%s\n' "$tag" > "$stamp"
+        refresh_desktop_db
+    fi
+
+    ok "Castle of the Dreadkeep $tag installed to $DREADKEEP_APPIMAGE"
+    report "Castle of the Dreadkeep" "$tag (prebuilt AppImage) → $DREADKEEP_APPIMAGE"
+}
+
+# Verify the AppImage against the sha512 and size electron-builder records in the
+# release's latest-linux.yml. The digest there is base64, not hex, so the local
+# sha512sum output is converted before comparing. Returns non-zero if the yml can't
+# be fetched or the digest doesn't match.
+verify_dreadkeep() {
+    local file="$1" tag="$2"
+    local yml expected_sha expected_len actual_sha actual_len
+
+    yml="$(curl -fsSL "https://github.com/$DREADKEEP_REPO/releases/download/$tag/latest-linux.yml" 2>/dev/null)" \
+        || { warn "couldn't fetch latest-linux.yml — cannot verify the download"; return 1; }
+
+    # Take the top-level `sha512:`/`size:` from the files entry. head -1 picks the
+    # AppImage's (it's the only file in a linux-AppImage-only build, and the first
+    # either way); the duplicate top-level sha512 further down is the same value.
+    expected_sha="$(printf '%s\n' "$yml" | grep -m1 '^ *sha512:' | awk '{print $2}')"
+    expected_len="$(printf '%s\n' "$yml" | grep -m1 '^ *size:' | awk '{print $2}')"
+    [[ -n "$expected_sha" ]] || { warn "no sha512 in latest-linux.yml — cannot verify"; return 1; }
+
+    # electron-builder stores the digest base64-encoded; convert ours to match.
+    actual_sha="$(sha512sum "$file" | awk '{print $1}' | xxd -r -p | base64 -w0)"
+    actual_len="$(stat -c%s "$file")"
+
+    if [[ "$actual_sha" == "$expected_sha" ]] && [[ -z "$expected_len" || "$actual_len" == "$expected_len" ]]; then
+        ok "checksum verified (sha512, from latest-linux.yml)"
+        return 0
+    fi
+
+    warn "CHECKSUM MISMATCH — the download does not match latest-linux.yml"
+    warn "  expected: $expected_sha ($expected_len bytes)"
+    warn "  got:      $actual_sha ($actual_len bytes)"
+    return 1
+}
+
+write_dreadkeep_desktop() {
+    cat > "$APPS_DIR/com.dreadkeep.castle.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Castle of the Dreadkeep
+Comment=A procedural medieval castle crawler — retro raycaster-style FPS
+Exec=$DREADKEEP_APPIMAGE
+Icon=$DREADKEEP_DIR/icon.png
+Terminal=false
+Categories=Game;ActionGame;
+StartupNotify=true
+StartupWMClass=castle-of-the-dreadkeep
+EOF
+}
+
+# ── 9. system config ──────────────────────────────────────────────────────────
 configure_system() {
     step "System config"
 
@@ -1652,6 +1951,8 @@ main() {
     wanted streamhub    && install_streamhub
     wanted consolevault && install_consolevault
     wanted discripper   && install_discripper
+    wanted griddown     && install_griddown
+    wanted dreadkeep    && install_dreadkeep
     wanted config       && configure_system
 
     if [[ $DRY_RUN -eq 1 ]]; then
@@ -1689,6 +1990,8 @@ main() {
     printf '    %sStreamHub.AppImage%s    Netflix / Prime / Disney+ in one app\n' "$BOLD" "$RESET"
     printf '    %sConsoleVault.AppImage%s ROM-collection launcher (SNES → PS3)\n' "$BOLD" "$RESET"
     printf '    %sDiscRipper.AppImage%s   auto-rip DVDs/Blu-rays to H.265 (Plex/Jellyfin)\n' "$BOLD" "$RESET"
+    printf '    %sGridDown.AppImage%s     offline US maps — roads, trails, terrain\n' "$BOLD" "$RESET"
+    printf '    %sCastleOfTheDreadkeep.AppImage%s  procedural castle crawler (FPS)\n' "$BOLD" "$RESET"
     printf '    %s(or find everything in the app menu)%s\n\n' "$DIM" "$RESET"
 }
 

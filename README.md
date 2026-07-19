@@ -11,7 +11,7 @@ Safe to re-run — a second run is a no-op.
 ```bash
 ./install.sh --dry-run          # show what it would do, change nothing
 ./install.sh --only config      # just the KDE/Brave config
-./tests/run.sh                  # 45 tests, no VM needed
+./tests/run.sh                  # 110 tests, no VM needed
 ```
 
 **Log into KDE before running it.** Plasma doesn't write its panel config until

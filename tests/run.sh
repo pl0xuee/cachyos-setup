@@ -106,6 +106,33 @@ else
     fail "Disc Ripper aborts on failed verify" "the download is chmod'd without a passing verify"
 fi
 
+if awk '/^install_griddown\(\)/,/^}/' "$SCRIPT" | grep -q 'grep -o .*_amd64.*|| true'; then
+    pass "GridDown asset parsing survives a no-match (|| true)"
+else
+    fail "GridDown asset parsing survives a no-match" \
+         "a renamed asset would exit 1 with no message instead of the intended die"
+fi
+
+if awk '/^install_dreadkeep\(\)/,/^}/' "$SCRIPT" | grep -q 'grep -o .*castle-of-the-dreadkeep.*|| true'; then
+    pass "Castle of the Dreadkeep asset parsing survives a no-match (|| true)"
+else
+    fail "Castle of the Dreadkeep asset parsing survives a no-match" \
+         "a renamed asset would exit 1 with no message instead of the intended die"
+fi
+
+# Both new steps must abort rather than chmod an unverified download — same stance
+# as the three above, asserted so a refactor can't quietly drop the check.
+if awk '/^install_griddown\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_griddown .* || .*die'; then
+    pass "GridDown aborts the install on a failed verify"
+else
+    fail "GridDown aborts on failed verify" "the download is chmod'd without a passing verify"
+fi
+if awk '/^install_dreadkeep\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_dreadkeep .* || .*die'; then
+    pass "Castle of the Dreadkeep aborts the install on a failed verify"
+else
+    fail "Castle of the Dreadkeep aborts on failed verify" "the download is chmod'd without a passing verify"
+fi
+
 # `--only` with no value: `shift 2` fails, set -e exits, user sees nothing.
 out="$(bash "$SCRIPT" --only 2>&1)"; rc=$?
 [[ $rc -ne 0 ]] && pass "--only with no value exits non-zero" || fail "--only with no value exits non-zero"
@@ -178,7 +205,7 @@ fi
 group "Taskbar launcher list"
 
 mapfile -t tb < <(read_list "$REPO_ROOT/packages/taskbar.txt")
-check_eq "taskbar.txt parses to 9 launchers" "9" "${#tb[@]}"
+check_eq "taskbar.txt parses to 11 launchers" "11" "${#tb[@]}"
 
 # Every entry must be a .desktop name — 'applications:' prefixes or bare app
 # names silently produce a dead tile rather than an error.
@@ -195,7 +222,7 @@ fi
 # The order IS the feature — assert it, so a careless edit that reshuffles the
 # list gets caught rather than silently rearranging the taskbar.
 check_eq "launchers are in the intended order" \
-    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop com.discripper.app.desktop" \
+    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop com.discripper.app.desktop com.griddown.app.desktop com.dreadkeep.castle.desktop" \
     "${tb[*]}"
 
 # ── KDE power settings ────────────────────────────────────────────────────────
@@ -451,6 +478,229 @@ else
     printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
 fi
 
+# ── GridDown release-API parsing ──────────────────────────────────────────────
+group "GridDown release-API parsing"
+
+gd_release="$(curl -fsSL "https://api.github.com/repos/$GRIDDOWN_REPO/releases/latest" 2>/dev/null)"
+if [[ -z "$gd_release" || "$gd_release" == *'"Not Found"'* ]]; then
+    # GridDown's first release may not be published yet; the installer dies with a
+    # clear message in that case, which is the intended behaviour, not a test bug.
+    printf '  %s·%s no published release yet — skipping live release checks\n' "$DIM" "$RESET"
+else
+    pass "fetched the latest release"
+
+    gd_tag="$(printf '%s' "$gd_release" | grep -m1 '"tag_name"' | cut -d'"' -f4)"
+    gd_url="$(printf '%s' "$gd_release" | grep -o 'https://[^"]*_amd64\.AppImage"' | head -1 | tr -d '"')"
+
+    [[ "$gd_tag" =~ ^v[0-9]+\.[0-9]+ ]] && pass "tag parses as a version ($gd_tag)" \
+                                        || fail "tag parses as a version" "$gd_tag"
+    check_contains "asset URL ends in _amd64.AppImage" "_amd64.AppImage" "$gd_url"
+    check_contains "asset URL is a GitHub download URL" "github.com" "$gd_url"
+
+    if [[ "$gd_url" == *.sig ]]; then
+        fail "asset URL is the AppImage, not the .sig" "$gd_url"
+    else
+        pass "asset URL is the AppImage, not the .sig"
+    fi
+
+    code="$(curl -sIL -o /dev/null -w '%{http_code}' "$gd_url" 2>/dev/null)"
+    check_eq "asset URL is reachable (HTTP 200)" "200" "$code"
+fi
+
+# ── GridDown signature verification ───────────────────────────────────────────
+group "GridDown signature verification"
+
+if grep -qF 'verify_griddown "$tmp" "$url" ||' "$SCRIPT"; then
+    pass "download is verified before chmod +x"
+else
+    fail "download is verified before chmod +x" "the AppImage would be run unverified"
+fi
+
+# A repo with no published release yet must warn+skip, not abort the whole run —
+# but only for 404. A release that exists with a bad/missing asset must still die,
+# so the skip can't quietly become a blanket "ignore all failures".
+if awk '/^install_griddown\(\)/,/^}/' "$SCRIPT" | grep -q '"404"'; then
+    pass "no published release warns and skips rather than aborting the run"
+else
+    fail "no published release warns and skips" "an unreleased app would kill the whole installer"
+fi
+if awk '/^install_griddown\(\)/,/^}/' "$SCRIPT" | grep -q 'no GridDown _amd64.AppImage asset.*\|| die\|die "no GridDown'; then
+    pass "a published release with no AppImage asset still dies"
+else
+    fail "a published release with no AppImage asset still dies" "the 404 skip may have swallowed real failures"
+fi
+
+if awk '/^verify_griddown\(\)/,/^}/' "$SCRIPT" | grep -q 'return 1'; then
+    pass "an unverifiable signature aborts rather than warning"
+else
+    fail "an unverifiable signature aborts rather than warning"
+fi
+
+# The key is embedded, never pulled off the wire from the host it vouches for.
+if awk '/^verify_griddown\(\)/,/^}/' "$SCRIPT" | grep -qi 'pubkey.*curl\|curl.*pubkey\|tauri.conf'; then
+    fail "public key is embedded, not fetched at runtime"
+else
+    pass "public key is embedded, not fetched at runtime"
+fi
+
+# The pubkey in install.sh must match what the app actually ships in its Tauri
+# config (stored there as base64 of the whole minisign key file). A drift here
+# means every download would fail verification — catch it at test time.
+gd_conf="$(curl -fsSL "https://raw.githubusercontent.com/$GRIDDOWN_REPO/$GRIDDOWN_BRANCH/src-tauri/tauri.conf.json" 2>/dev/null || true)"
+if [[ -n "$gd_conf" ]]; then
+    gd_conf_key="$(printf '%s' "$gd_conf" | grep -m1 '"pubkey"' | cut -d'"' -f4 | base64 -d 2>/dev/null | tail -1 || true)"
+    if [[ -n "$gd_conf_key" ]]; then
+        check_eq "embedded pubkey matches the app's tauri.conf.json" "$gd_conf_key" "$GRIDDOWN_PUBKEY"
+    else
+        printf '  %s·%s couldn'\''t decode the pubkey from tauri.conf.json — skipping\n' "$DIM" "$RESET"
+    fi
+else
+    printf '  %s·%s couldn'\''t fetch tauri.conf.json — skipping pubkey cross-check\n' "$DIM" "$RESET"
+fi
+
+# And prove the real release verifies against the embedded key.
+if have minisign && [[ -n "${gd_tag:-}" && -n "${gd_url:-}" ]]; then
+    gdd="$(mktemp -d)"
+    if curl -fsSL "$gd_url" -o "$gdd/app.AppImage" 2>/dev/null \
+       && curl -fsSL "$gd_url.sig" 2>/dev/null | base64 -d > "$gdd/app.AppImage.minisig" 2>/dev/null; then
+        if minisign -Vm "$gdd/app.AppImage" -x "$gdd/app.AppImage.minisig" -P "$GRIDDOWN_PUBKEY" >/dev/null 2>&1; then
+            pass "real release verifies against the embedded public key"
+        else
+            fail "real release verifies against the embedded public key" "minisign rejected it"
+        fi
+    else
+        printf '  %s·%s couldn'\''t download the release — skipping live verify\n' "$DIM" "$RESET"
+    fi
+    rm -rf "$gdd"
+else
+    printf '  %s·%s minisign missing or no release — skipping live signature check\n' "$DIM" "$RESET"
+fi
+
+# ── GridDown .desktop file ────────────────────────────────────────────────────
+group "GridDown .desktop file"
+
+APPS_DIR="$tmp"
+GRIDDOWN_APPIMAGE="/home/user/.local/bin/GridDown.AppImage"
+GRIDDOWN_DIR="/home/user/.local/share/griddown"
+write_griddown_desktop
+
+gd_desktop="$tmp/com.griddown.app.desktop"
+[[ -f "$gd_desktop" ]] && pass ".desktop file is written" || fail ".desktop file is written"
+gd_content="$(cat "$gd_desktop" 2>/dev/null || true)"
+
+check_contains "has [Desktop Entry] header" "[Desktop Entry]" "$gd_content"
+check_contains "Exec points at the AppImage" "Exec=$GRIDDOWN_APPIMAGE" "$gd_content"
+check_contains "Icon uses an absolute path"  "Icon=$GRIDDOWN_DIR/icon.png" "$gd_content"
+check_contains "Type=Application" "Type=Application" "$gd_content"
+
+if have desktop-file-validate; then
+    if err="$(desktop-file-validate "$gd_desktop" 2>&1)"; then
+        pass "passes desktop-file-validate"
+    else
+        fail "passes desktop-file-validate" "$err"
+    fi
+else
+    printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
+fi
+
+# ── Castle of the Dreadkeep release-API parsing ───────────────────────────────
+group "Castle of the Dreadkeep release-API parsing"
+
+dk_release="$(curl -fsSL "https://api.github.com/repos/$DREADKEEP_REPO/releases/latest" 2>/dev/null)"
+if [[ -z "$dk_release" ]]; then
+    fail "fetched the latest release" "empty response (rate-limited?)"
+else
+    pass "fetched the latest release"
+
+    dk_tag="$(printf '%s' "$dk_release" | grep -m1 '"tag_name"' | cut -d'"' -f4)"
+    dk_url="$(printf '%s' "$dk_release" | grep -o 'https://[^"]*/castle-of-the-dreadkeep\.AppImage"' | head -1 | tr -d '"')"
+
+    [[ "$dk_tag" =~ ^v[0-9]+\.[0-9]+ ]] && pass "tag parses as a version ($dk_tag)" \
+                                        || fail "tag parses as a version" "$dk_tag"
+    check_contains "asset URL ends in .AppImage" ".AppImage" "$dk_url"
+    check_contains "asset URL is a GitHub download URL" "github.com" "$dk_url"
+
+    # The pattern must not pick up the .blockmap sibling as the download target.
+    if [[ "$dk_url" == *.blockmap ]]; then
+        fail "asset URL is the AppImage, not the .blockmap" "$dk_url"
+    else
+        pass "asset URL is the AppImage, not the .blockmap"
+    fi
+
+    code="$(curl -sIL -o /dev/null -w '%{http_code}' "$dk_url" 2>/dev/null)"
+    check_eq "asset URL is reachable (HTTP 200)" "200" "$code"
+fi
+
+# ── Castle of the Dreadkeep checksum verification ─────────────────────────────
+group "Castle of the Dreadkeep checksum verification"
+
+if grep -qF 'verify_dreadkeep "$tmp" "$tag" ||' "$SCRIPT"; then
+    pass "download is verified before chmod +x"
+else
+    fail "download is verified before chmod +x" "the AppImage would be run unverified"
+fi
+
+if awk '/^verify_dreadkeep\(\)/,/^}/' "$SCRIPT" | grep -q 'return 1'; then
+    pass "an unverifiable checksum aborts rather than warning"
+else
+    fail "an unverifiable checksum aborts rather than warning"
+fi
+
+# The yml must actually carry a sha512 the installer can read — if electron-builder
+# ever changes that format, the installer would refuse every download, and this is
+# where we'd find out.
+if [[ -n "${dk_tag:-}" ]]; then
+    dk_yml="$(curl -fsSL "https://github.com/$DREADKEEP_REPO/releases/download/$dk_tag/latest-linux.yml" 2>/dev/null || true)"
+    if [[ -n "$dk_yml" ]]; then
+        pass "latest-linux.yml is published in the release"
+        dk_sha="$(printf '%s\n' "$dk_yml" | grep -m1 '^ *sha512:' | awk '{print $2}')"
+        [[ -n "$dk_sha" ]] && pass "latest-linux.yml carries a sha512" \
+                           || fail "latest-linux.yml carries a sha512" "no sha512 line"
+
+        # Prove the digest matches the real asset, using the installer's own
+        # base64 conversion — a hex/base64 mixup here would break every install.
+        if [[ -n "${dk_url:-}" && -n "$dk_sha" ]]; then
+            dkd="$(mktemp -d)"
+            if curl -fsSL "$dk_url" -o "$dkd/app.AppImage" 2>/dev/null; then
+                dk_actual="$(sha512sum "$dkd/app.AppImage" | awk '{print $1}' | xxd -r -p | base64 -w0)"
+                check_eq "real release matches the published sha512" "$dk_sha" "$dk_actual"
+            else
+                printf '  %s·%s couldn'\''t download the release — skipping live checksum\n' "$DIM" "$RESET"
+            fi
+            rm -rf "$dkd"
+        fi
+    else
+        fail "latest-linux.yml is published in the release" "couldn't fetch it"
+    fi
+fi
+
+# ── Castle of the Dreadkeep .desktop file ─────────────────────────────────────
+group "Castle of the Dreadkeep .desktop file"
+
+APPS_DIR="$tmp"
+DREADKEEP_APPIMAGE="/home/user/.local/bin/CastleOfTheDreadkeep.AppImage"
+DREADKEEP_DIR="/home/user/.local/share/dreadkeep"
+write_dreadkeep_desktop
+
+dk_desktop="$tmp/com.dreadkeep.castle.desktop"
+[[ -f "$dk_desktop" ]] && pass ".desktop file is written" || fail ".desktop file is written"
+dk_content="$(cat "$dk_desktop" 2>/dev/null || true)"
+
+check_contains "has [Desktop Entry] header" "[Desktop Entry]" "$dk_content"
+check_contains "Exec points at the AppImage" "Exec=$DREADKEEP_APPIMAGE" "$dk_content"
+check_contains "Icon uses an absolute path"  "Icon=$DREADKEEP_DIR/icon.png" "$dk_content"
+check_contains "Type=Application" "Type=Application" "$dk_content"
+
+if have desktop-file-validate; then
+    if err="$(desktop-file-validate "$dk_desktop" 2>&1)"; then
+        pass "passes desktop-file-validate"
+    else
+        fail "passes desktop-file-validate" "$err"
+    fi
+else
+    printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
+fi
+
 # ── --dry-run is genuinely inert ──────────────────────────────────────────────
 group "--dry-run changes nothing"
 
@@ -469,7 +719,8 @@ check_contains "--dry-run would clone AgentTileCLI" "[dry-run] git clone" "$out"
 check_contains "--dry-run never invokes sudo" "no sudo needed" "$out"
 
 # A dry run must not leave a half-downloaded AppImage anywhere.
-if [[ -e "$fake_home/.local/bin/StreamHub.AppImage" || -e "$fake_home/.local/bin/ConsoleVault.AppImage" ]]; then
+if [[ -e "$fake_home/.local/bin/StreamHub.AppImage" || -e "$fake_home/.local/bin/ConsoleVault.AppImage" \
+   || -e "$fake_home/.local/bin/GridDown.AppImage" || -e "$fake_home/.local/bin/CastleOfTheDreadkeep.AppImage" ]]; then
     fail "--dry-run downloads no AppImage"
 else
     pass "--dry-run downloads no AppImage"
