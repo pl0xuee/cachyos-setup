@@ -1098,8 +1098,12 @@ install_griddown() {
 
         # Same launcher-repair path as the others: a matching stamp would otherwise
         # skip this step forever, stranding a deleted .desktop or icon.
-        if [[ ! -f "$APPS_DIR/com.griddown.app.desktop" || ! -f "$GRIDDOWN_DIR/icon.png" ]]; then
-            info "Launcher missing — recreating it..."
+        # ...and a launcher written by an older version of this script can carry a
+        # stale StartupWMClass, which leaves a duplicate taskbar icon, so rewrite
+        # it whenever it doesn't match what write_griddown_desktop produces now.
+        if [[ ! -f "$APPS_DIR/com.griddown.app.desktop" || ! -f "$GRIDDOWN_DIR/icon.png" ]] \
+            || ! grep -qx 'StartupWMClass=griddown' "$APPS_DIR/com.griddown.app.desktop"; then
+            info "Launcher missing or out of date — recreating it..."
             mkdir -p "$APPS_DIR" "$GRIDDOWN_DIR"
             [[ -f "$GRIDDOWN_DIR/icon.png" ]] || curl -fsSL -o "$GRIDDOWN_DIR/icon.png" \
                 "https://raw.githubusercontent.com/$GRIDDOWN_REPO/$GRIDDOWN_BRANCH/src-tauri/icons/icon.png" \
@@ -1184,6 +1188,12 @@ verify_griddown() {
     return 1
 }
 
+# StartupWMClass has to match the window's WM_CLASS or the taskbar shows the
+# running window as a second, unmatched app next to this icon. Tauri takes that
+# from the crate name, not productName, so it was "tauri-app" through v0.1.3;
+# griddown renamed the crate after that release, and the app self-updates, so
+# this tracks the new name. Anything still on <=v0.1.3 keeps the duplicate icon
+# until it updates.
 write_griddown_desktop() {
     cat > "$APPS_DIR/com.griddown.app.desktop" <<EOF
 [Desktop Entry]
@@ -1195,7 +1205,7 @@ Icon=$GRIDDOWN_DIR/icon.png
 Terminal=false
 Categories=Utility;Maps;Education;
 StartupNotify=true
-StartupWMClass=GridDown
+StartupWMClass=griddown
 EOF
 }
 
