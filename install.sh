@@ -783,6 +783,10 @@ install_streamhub() {
             ok "launcher recreated"
         fi
 
+        # Outside the repair branch above on purpose: that only fires when ours
+        # is missing or stale, and a stray can sit beside a perfectly good one.
+        prune_competing_launchers "com.streamhub.app.desktop"
+
         report "StreamHub" "$tag already installed"
         return
     fi
@@ -801,6 +805,7 @@ install_streamhub() {
         run mv -f "$tmp" "$STREAMHUB_APPIMAGE"
         run curl -fsSL -o "$STREAMHUB_DIR/icon.png" "https://raw.githubusercontent.com/$STREAMHUB_REPO/master/assets/icon.png"
         run "write $APPS_DIR/com.streamhub.app.desktop"
+        prune_competing_launchers "com.streamhub.app.desktop"
         run "stamp version $tag"
     else
         curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
@@ -822,6 +827,7 @@ install_streamhub() {
             || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
 
         write_streamhub_desktop
+        prune_competing_launchers "com.streamhub.app.desktop"
         printf '%s\n' "$tag" > "$stamp"
         refresh_desktop_db
     fi
@@ -899,8 +905,18 @@ refresh_desktop_db() {
 # panel is pinned to and the one that tracks the AppImage this script manages,
 # so any other launcher claiming the class goes.
 prune_competing_launchers() {
-    local keep="$1" wmclass="$2" f removed=0
+    local keep="$1" f removed=0 wmclass
     [[ -d "$APPS_DIR" ]] || return 0
+
+    # Read the class off the launcher being kept rather than repeating the
+    # literal at all seven call sites. 63b72a5 is the standing reminder that
+    # these drift: GridDown's went from GridDown to griddown, and a call site
+    # left on the old value would delete the very launcher it means to protect.
+    wmclass="$(sed -n 's/^StartupWMClass=//p' "$APPS_DIR/$keep" 2>/dev/null | head -1)"
+    # No launcher, or one carrying no class, means nothing to compare against —
+    # prune nothing rather than let an empty class match loosely.
+    [[ -n "$wmclass" ]] || return 0
+
     for f in "$APPS_DIR"/*.desktop; do
         [[ -f "$f" ]] || continue                       # no match — the glob stayed literal
         [[ "${f##*/}" == "$keep" ]] && continue
@@ -959,6 +975,10 @@ install_consolevault() {
             ok "launcher recreated"
         fi
 
+        # Outside the repair branch above on purpose: that only fires when ours
+        # is missing or stale, and a stray can sit beside a perfectly good one.
+        prune_competing_launchers "com.consolevault.app.desktop"
+
         report "ConsoleVault" "$tag already installed"
         return
     fi
@@ -977,6 +997,7 @@ install_consolevault() {
         run mv -f "$tmp" "$CONSOLEVAULT_APPIMAGE"
         run curl -fsSL -o "$CONSOLEVAULT_DIR/icon.png" "https://raw.githubusercontent.com/$CONSOLEVAULT_REPO/main/src-tauri/icons/icon.png"
         run "write $APPS_DIR/com.consolevault.app.desktop"
+        prune_competing_launchers "com.consolevault.app.desktop"
         run "stamp version $tag"
     else
         curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
@@ -996,6 +1017,7 @@ install_consolevault() {
             || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
 
         write_consolevault_desktop
+        prune_competing_launchers "com.consolevault.app.desktop"
         printf '%s\n' "$tag" > "$stamp"
         refresh_desktop_db
     fi
@@ -1097,6 +1119,10 @@ install_discripper() {
             ok "launcher recreated"
         fi
 
+        # Outside the repair branch above on purpose: that only fires when ours
+        # is missing or stale, and a stray can sit beside a perfectly good one.
+        prune_competing_launchers "com.discripper.app.desktop"
+
         report "Disc Ripper" "$tag already installed"
         return
     fi
@@ -1115,6 +1141,7 @@ install_discripper() {
         run mv -f "$tmp" "$DISCRIPPER_APPIMAGE"
         run curl -fsSL -o "$DISCRIPPER_DIR/icon.png" "https://raw.githubusercontent.com/$DISCRIPPER_REPO/main/src/discripper/resources/icon.png"
         run "write $APPS_DIR/com.discripper.app.desktop"
+        prune_competing_launchers "com.discripper.app.desktop"
         run "stamp version $tag"
     else
         curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
@@ -1135,6 +1162,7 @@ install_discripper() {
             || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
 
         write_discripper_desktop
+        prune_competing_launchers "com.discripper.app.desktop"
         printf '%s\n' "$tag" > "$stamp"
         refresh_desktop_db
     fi
@@ -1252,6 +1280,10 @@ install_griddown() {
             ok "launcher recreated"
         fi
 
+        # Outside the repair branch above on purpose: that only fires when ours
+        # is missing or stale, and a stray can sit beside a perfectly good one.
+        prune_competing_launchers "com.griddown.app.desktop"
+
         report "GridDown" "$tag already installed"
         return
     fi
@@ -1269,6 +1301,7 @@ install_griddown() {
         run mv -f "$tmp" "$GRIDDOWN_APPIMAGE"
         run curl -fsSL -o "$GRIDDOWN_DIR/icon.png" "https://raw.githubusercontent.com/$GRIDDOWN_REPO/$GRIDDOWN_BRANCH/src-tauri/icons/icon.png"
         run "write $APPS_DIR/com.griddown.app.desktop"
+        prune_competing_launchers "com.griddown.app.desktop"
         run "stamp version $tag"
     else
         curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
@@ -1286,6 +1319,7 @@ install_griddown() {
             || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
 
         write_griddown_desktop
+        prune_competing_launchers "com.griddown.app.desktop"
         printf '%s\n' "$tag" > "$stamp"
         refresh_desktop_db
     fi
@@ -1385,6 +1419,10 @@ install_dreadkeep() {
             ok "launcher recreated"
         fi
 
+        # Outside the repair branch above on purpose: that only fires when ours
+        # is missing or stale, and a stray can sit beside a perfectly good one.
+        prune_competing_launchers "com.dreadkeep.castle.desktop"
+
         report "Castle of the Dreadkeep" "$tag already installed"
         return
     fi
@@ -1400,6 +1438,7 @@ install_dreadkeep() {
         run mv -f "$tmp" "$DREADKEEP_APPIMAGE"
         run curl -fsSL -o "$DREADKEEP_DIR/icon.png" "https://raw.githubusercontent.com/$DREADKEEP_REPO/main/build/icon.png"
         run "write $APPS_DIR/com.dreadkeep.castle.desktop"
+        prune_competing_launchers "com.dreadkeep.castle.desktop"
         run "stamp version $tag"
     else
         curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
@@ -1419,6 +1458,7 @@ install_dreadkeep() {
             || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
 
         write_dreadkeep_desktop
+        prune_competing_launchers "com.dreadkeep.castle.desktop"
         printf '%s\n' "$tag" > "$stamp"
         refresh_desktop_db
     fi
@@ -1535,7 +1575,7 @@ for a in json.load(sys.stdin).get("assets", []):
         # Outside that branch on purpose: a stray launcher can sit beside a
         # perfectly good one of ours, and the repair above only fires when ours
         # is missing or stale.
-        prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui"
+        prune_competing_launchers "com.stalkergamma.gui.desktop"
 
         report "Stalker GAMMA GUI" "$tag already installed"
         return
@@ -1555,7 +1595,7 @@ for a in json.load(sys.stdin).get("assets", []):
         run mv -f "$tmp" "$GAMMAGUI_APPIMAGE"
         run curl -fsSL -o "$GAMMAGUI_DIR/icon.png" "https://raw.githubusercontent.com/$GAMMAGUI_REPO/main/packaging/icon-256.png"
         run "write $APPS_DIR/com.stalkergamma.gui.desktop"
-        prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui"
+        prune_competing_launchers "com.stalkergamma.gui.desktop"
         run "stamp version $tag"
     else
         curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
@@ -1574,7 +1614,7 @@ for a in json.load(sys.stdin).get("assets", []):
             || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
 
         write_gammagui_desktop
-        prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui"
+        prune_competing_launchers "com.stalkergamma.gui.desktop"
         printf '%s\n' "$tag" > "$stamp"
         refresh_desktop_db
     fi
@@ -1680,6 +1720,10 @@ for a in json.load(sys.stdin).get("assets", []):
             ok "launcher recreated"
         fi
 
+        # Outside the repair branch above on purpose: that only fires when ours
+        # is missing or stale, and a stray can sit beside a perfectly good one.
+        prune_competing_launchers "com.lorerim.autoinstall.desktop"
+
         report "LoreRim" "$tag already installed"
         return
     fi
@@ -1698,6 +1742,7 @@ for a in json.load(sys.stdin).get("assets", []):
         run mv -f "$tmp" "$LORERIM_APPIMAGE"
         run curl -fsSL -o "$LORERIM_DIR/icon.png" "https://raw.githubusercontent.com/$LORERIM_REPO/main/packaging/icon-256.png"
         run "write $APPS_DIR/com.lorerim.autoinstall.desktop"
+        prune_competing_launchers "com.lorerim.autoinstall.desktop"
         run "stamp version $tag"
     else
         curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
@@ -1716,6 +1761,7 @@ for a in json.load(sys.stdin).get("assets", []):
             || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
 
         write_lorerim_desktop
+        prune_competing_launchers "com.lorerim.autoinstall.desktop"
         printf '%s\n' "$tag" > "$stamp"
         refresh_desktop_db
     fi

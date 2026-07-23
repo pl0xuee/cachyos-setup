@@ -873,7 +873,7 @@ StartupWMClass=Something.Else
 EOF
 
 DRY_RUN=0
-prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui"
+prune_competing_launchers "com.stalkergamma.gui.desktop"
 
 [[ ! -f "$prune_dir/stalker-gamma-gui.desktop" ]] \
     && pass "removes a stray launcher claiming the same StartupWMClass" \
@@ -899,7 +899,7 @@ StartupWMClass=StalkerGamma.Gui
 EOF
 
 DRY_RUN=1
-prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui" >/dev/null
+prune_competing_launchers "com.stalkergamma.gui.desktop" >/dev/null
 DRY_RUN=0
 
 [[ -f "$prune_dry/stalker-gamma-gui.desktop" ]] \
@@ -914,7 +914,7 @@ mkdir -p "$prune_re"
 APPS_DIR="$prune_re"
 printf '[Desktop Entry]\nStartupWMClass=StalkerGammaXGui\n' > "$prune_re/innocent.desktop"
 DRY_RUN=0
-prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui" >/dev/null 2>&1
+prune_competing_launchers "com.stalkergamma.gui.desktop" >/dev/null 2>&1
 [[ -f "$prune_re/innocent.desktop" ]] \
     && pass "matches the window class literally, not as a regex" \
     || fail "matches the window class literally, not as a regex" \
@@ -930,7 +930,7 @@ else
     APPS_DIR="$prune_ro"
     printf '[Desktop Entry]\nStartupWMClass=StalkerGamma.Gui\n' > "$prune_ro/stuck.desktop"
     chmod 500 "$prune_ro"
-    prune_msg="$(prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui" 2>&1)"
+    prune_msg="$(prune_competing_launchers "com.stalkergamma.gui.desktop" 2>&1)"
     chmod 700 "$prune_ro"
 
     if [[ -f "$prune_ro/stuck.desktop" && "$prune_msg" == *"removed stuck.desktop"* ]]; then
@@ -939,6 +939,40 @@ else
         pass "doesn't claim to have removed a file it couldn't"
     fi
 fi
+
+# The class is read from the launcher we wrote rather than passed in at each
+# call site. Seven apps would otherwise repeat the literal seven times, and
+# these do drift — 63b72a5 changed GridDown's from GridDown to griddown.
+prune_derive="$tmp/prune-derive"
+mkdir -p "$prune_derive"
+APPS_DIR="$prune_derive"
+GAMMAGUI_APPIMAGE="/home/user/.local/bin/StalkerGammaGui.AppImage"
+GAMMAGUI_DIR="/home/user/.local/share/stalkergammagui"
+write_gammagui_desktop
+printf '[Desktop Entry]\nStartupWMClass=StalkerGamma.Gui\n' > "$prune_derive/stray.desktop"
+DRY_RUN=0
+prune_competing_launchers "com.stalkergamma.gui.desktop" >/dev/null 2>&1
+[[ ! -f "$prune_derive/stray.desktop" ]] \
+    && pass "reads the window class from the launcher it keeps" \
+    || fail "reads the window class from the launcher it keeps" "the stray survived"
+
+# Nothing to compare against must mean nothing is touched. If a missing or
+# class-less launcher yielded an empty class, a loose match would sweep the
+# whole directory.
+prune_none="$tmp/prune-noclass"
+mkdir -p "$prune_none"
+APPS_DIR="$prune_none"
+printf '[Desktop Entry]\nName=Some Other App\nExec=/usr/bin/true\n' > "$prune_none/bystander.desktop"
+prune_competing_launchers "com.stalkergamma.gui.desktop" >/dev/null 2>&1
+[[ -f "$prune_none/bystander.desktop" ]] \
+    && pass "a missing launcher prunes nothing" \
+    || fail "a missing launcher prunes nothing" "it deleted an unrelated launcher"
+
+printf '[Desktop Entry]\nName=Ours\nExec=/usr/bin/true\n' > "$prune_none/com.stalkergamma.gui.desktop"
+prune_competing_launchers "com.stalkergamma.gui.desktop" >/dev/null 2>&1
+[[ -f "$prune_none/bystander.desktop" ]] \
+    && pass "a launcher with no StartupWMClass prunes nothing" \
+    || fail "a launcher with no StartupWMClass prunes nothing" "an empty class matched everything"
 
 # A stray can sit beside a perfectly good launcher, so the prune cannot live in
 # the launcher-repair branch — that only fires when ours is missing or stale.
@@ -951,6 +985,19 @@ else
     fail "the already-installed path still prunes strays" \
          "a matching version stamp returns before any pruning happens"
 fi
+
+# Every app that writes a launcher prunes competitors for it, on both the
+# already-installed path and the install path — so a new app added later can't
+# quietly skip it.
+for app in streamhub consolevault discripper griddown dreadkeep gammagui lorerim; do
+    app_block="$(awk "/^install_$app\\(\\)/,/^}/" "$SCRIPT")"
+    n="$(grep -c 'prune_competing_launchers' <<<"$app_block")"
+    if [[ "$n" -ge 2 ]]; then
+        pass "install_$app prunes competing launchers"
+    else
+        fail "install_$app prunes competing launchers" "only $n call(s) — expected the skip and install paths"
+    fi
+done
 
 # ── GitHub API access ─────────────────────────────────────────────────────────
 # Unauthenticated callers get 60 requests/hour per IP, and GitHub answers 403 —
