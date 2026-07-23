@@ -18,3 +18,4 @@ com.consolevault.app.desktop            # ConsoleVault
 com.discripper.app.desktop              # Disc Ripper
 com.griddown.app.desktop                # GridDown
 com.dreadkeep.castle.desktop            # Castle of the Dreadkeep
+com.stalkergamma.gui.desktop            # Stalker GAMMA GUI
