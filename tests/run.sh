@@ -906,6 +906,40 @@ DRY_RUN=0
     && pass "--dry-run reports but deletes nothing" \
     || fail "--dry-run reports but deletes nothing" "the stray was removed during a dry run"
 
+# The class is a literal, not a pattern. Every class here contains a dot —
+# StalkerGamma.Gui, Lorerim.Gui — and an unescaped dot in a regex matches any
+# character, so a launcher for a different app would be deleted.
+prune_re="$tmp/prune-regex"
+mkdir -p "$prune_re"
+APPS_DIR="$prune_re"
+printf '[Desktop Entry]\nStartupWMClass=StalkerGammaXGui\n' > "$prune_re/innocent.desktop"
+DRY_RUN=0
+prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui" >/dev/null 2>&1
+[[ -f "$prune_re/innocent.desktop" ]] \
+    && pass "matches the window class literally, not as a regex" \
+    || fail "matches the window class literally, not as a regex" \
+            "a launcher for StalkerGammaXGui was deleted by the dot in StalkerGamma.Gui"
+
+# Claiming a removal that didn't happen is worse than the duplicate icon: it
+# reports the problem fixed while it is still there.
+if [[ "$(id -u)" -eq 0 ]]; then
+    printf '  %s·%s running as root — skipping the unremovable-file check\n' "$DIM" "$RESET"
+else
+    prune_ro="$tmp/prune-readonly"
+    mkdir -p "$prune_ro"
+    APPS_DIR="$prune_ro"
+    printf '[Desktop Entry]\nStartupWMClass=StalkerGamma.Gui\n' > "$prune_ro/stuck.desktop"
+    chmod 500 "$prune_ro"
+    prune_msg="$(prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui" 2>&1)"
+    chmod 700 "$prune_ro"
+
+    if [[ -f "$prune_ro/stuck.desktop" && "$prune_msg" == *"removed stuck.desktop"* ]]; then
+        fail "doesn't claim to have removed a file it couldn't" "$prune_msg"
+    else
+        pass "doesn't claim to have removed a file it couldn't"
+    fi
+fi
+
 # A stray can sit beside a perfectly good launcher, so the prune cannot live in
 # the launcher-repair branch — that only fires when ours is missing or stale.
 # It has to run on the already-installed path too, or a re-run never fixes it.
@@ -960,6 +994,14 @@ fi
 
 msg="$(github_api_diagnose 404 '{"message":"Not Found"}' 0 2>&1)"
 check_contains "a 404 is reported as a missing repo or release" "404" "$msg"
+
+# curl's own -w writes the status line even when the transfer fails, so adding
+# another on the error path leaves two — and the body then reads "\n000"
+# instead of empty. Only the status is parsed today, so this is latent, but any
+# caller that reads the body of a failed request would get that garbage.
+unreachable="$(github_api_raw "https://nonexistent.invalid.example/x" 2>/dev/null)"
+check_eq "an unreachable host reports status 000" "000" "${unreachable##*$'\n'}"
+check_eq "an unreachable host leaves an empty body" "" "${unreachable%$'\n'*}"
 
 # Every release lookup must go through the helper, or it stays unauthenticated
 # and keeps reporting a rate-limit refusal as a network failure. Matches any

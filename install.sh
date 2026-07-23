@@ -241,9 +241,15 @@ github_api_raw() {
     token="$(github_token)"
     [[ -n "$token" ]] && auth=(-H "Authorization: Bearer $token")
 
-    curl -sSL -w $'\n%{http_code}' \
-         -H "Accept: application/vnd.github+json" \
-         "${auth[@]}" "$url" 2>/dev/null || printf '\n000'
+    local out
+    out="$(curl -sSL -w $'\n%{http_code}' \
+                -H "Accept: application/vnd.github+json" \
+                "${auth[@]}" "$url" 2>/dev/null)" || true
+    # curl writes the status line even when the transfer fails, so only stand one
+    # in when it wrote nothing at all — appending unconditionally leaves two, and
+    # the body then parses as "\n000" rather than empty.
+    [[ -n "$out" ]] || out=$'\n000'
+    printf '%s' "$out"
 }
 
 # Whether the request carried a token, so a diagnosis can tell "your 60 are
@@ -898,12 +904,16 @@ prune_competing_launchers() {
     for f in "$APPS_DIR"/*.desktop; do
         [[ -f "$f" ]] || continue                       # no match — the glob stayed literal
         [[ "${f##*/}" == "$keep" ]] && continue
-        grep -qx "StartupWMClass=$wmclass" "$f" || continue
+        # -F: every class here contains a dot, and an unescaped dot in a regex
+        # matches any character — enough to delete a different app's launcher.
+        grep -qxF "StartupWMClass=$wmclass" "$f" || continue
         if [[ $DRY_RUN -eq 1 ]]; then
             run "rm $f (claims StartupWMClass=$wmclass — splits the taskbar icon with $keep)"
-        else
-            rm -f "$f" && removed=1
+        elif rm -f "$f"; then
+            removed=1
             warn "removed ${f##*/} — it claimed the same window class as $keep, which split the taskbar icon"
+        else
+            warn "couldn't remove ${f##*/} — it claims the same window class as $keep, so the taskbar icon may still split"
         fi
     done
     [[ $removed -eq 1 ]] && refresh_desktop_db
