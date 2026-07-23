@@ -188,6 +188,83 @@ warn() {
 }
 die()  { printf '\n %s✗ error:%s %s\n\n' "$RED$BOLD" "$RESET" "$*" >&2; exit 1; }
 
+# GitHub gives unauthenticated callers 60 API requests an hour per IP. Every
+# AppImage step here spends one, so a couple of re-runs can empty the budget —
+# and GitHub answers a spent budget with 403, not 429, which reads exactly like
+# a permissions or network fault. Send a token when one is around (5000 an
+# hour), and when we are refused, say which refusal it actually was.
+github_token() {
+    local t=""
+    if   [[ -n "${GH_TOKEN:-}" ]];     then t="$GH_TOKEN"
+    elif [[ -n "${GITHUB_TOKEN:-}" ]]; then t="$GITHUB_TOKEN"
+    elif have gh;                      then t="$(gh auth token 2>/dev/null || true)"
+    fi
+    # A stray newline out of `gh auth token` would terminate the header early.
+    printf '%s' "${t//[$'\n\r']/}"
+}
+
+# Turn a failed response into a sentence naming the actual cause. Separate from
+# the request so it can be tested without spending the very budget it reports on.
+github_api_diagnose() {
+    local code="$1" body="$2" had_token="$3" reset="" when=""
+
+    if [[ "$code" == 403 || "$code" == 429 ]] && [[ "$body" == *"rate limit exceeded"* ]]; then
+        # /rate_limit is free — it doesn't spend a request from the budget it reports.
+        reset="$(curl -sS https://api.github.com/rate_limit 2>/dev/null \
+                 | python -c 'import json,sys; print(json.load(sys.stdin)["resources"]["core"]["reset"])' \
+                   2>/dev/null || true)"
+        [[ -n "$reset" ]] && when="$(date -d "@$reset" '+%H:%M' 2>/dev/null || true)"
+
+        if [[ "$had_token" -eq 1 ]]; then
+            printf 'GitHub API rate limit exhausted for this token%s.' "${when:+ — resets at $when}"
+        else
+            printf 'GitHub API rate limit exhausted — 60 requests an hour, per IP, unauthenticated%s.\n' \
+                   "${when:+; resets at $when}"
+            printf '   Set GH_TOKEN (or run `gh auth login`) for 5000 an hour.'
+        fi
+        return 0
+    fi
+
+    case "$code" in
+        404) printf 'GitHub returned 404 — no such repository, or it has no published release yet.' ;;
+        401) printf 'GitHub returned 401 — the token was rejected. Check GH_TOKEN, or run `gh auth status`.' ;;
+        000) printf "couldn't reach the GitHub API at all — network down, or a DNS/TLS failure." ;;
+        *)   printf 'GitHub API request failed with HTTP %s.' "$code" ;;
+    esac
+}
+
+# Authenticated GET, printing the body with the status appended on its own last
+# line. Callers that need to tell one failure from another — GridDown treats a
+# 404 as "no release cut yet" rather than an error — split that off themselves.
+github_api_raw() {
+    local url="$1" token auth=()
+    token="$(github_token)"
+    [[ -n "$token" ]] && auth=(-H "Authorization: Bearer $token")
+
+    curl -sSL -w $'\n%{http_code}' \
+         -H "Accept: application/vnd.github+json" \
+         "${auth[@]}" "$url" 2>/dev/null || printf '\n000'
+}
+
+# Whether the request carried a token, so a diagnosis can tell "your 60 are
+# gone" from "your token's budget is gone" without re-deriving it.
+github_had_token() { [[ -n "$(github_token)" ]] && printf '1' || printf '0'; }
+
+# Fetch a GitHub API URL, printing the body on success. On failure the reason
+# goes to stderr and the caller decides whether that is fatal.
+github_api() {
+    local url="$1" response body code
+    response="$(github_api_raw "$url")"
+    code="${response##*$'\n'}"
+    body="${response%$'\n'*}"
+
+    [[ "$code" == 200 ]] && { printf '%s' "$body"; return 0; }
+
+    printf '   %s▲%s %s\n' "$YELLOW" "$RESET" \
+           "$(github_api_diagnose "$code" "$body" "$(github_had_token)")" >&2
+    return 1
+}
+
 BOX_W=52
 
 # Draw a box around some lines. Built rather than hand-drawn: counting box
@@ -669,8 +746,8 @@ install_streamhub() {
     local release tag url
 
     info "Checking latest release..."
-    release="$(curl -fsSL "https://api.github.com/repos/$STREAMHUB_REPO/releases/latest")" \
-        || die "couldn't reach the GitHub releases API."
+    release="$(github_api "https://api.github.com/repos/$STREAMHUB_REPO/releases/latest")" \
+        || die "couldn't fetch the latest release from GitHub."
     # `|| true` is load-bearing. grep exits 1 when it matches nothing, pipefail
     # propagates that to the assignment, and set -e then kills the script BEFORE
     # the checks below can run — so a renamed or pulled asset would exit 1 with
@@ -844,8 +921,8 @@ install_consolevault() {
     local release tag url
 
     info "Checking latest release..."
-    release="$(curl -fsSL "https://api.github.com/repos/$CONSOLEVAULT_REPO/releases/latest")" \
-        || die "couldn't reach the GitHub releases API."
+    release="$(github_api "https://api.github.com/repos/$CONSOLEVAULT_REPO/releases/latest")" \
+        || die "couldn't fetch the latest release from GitHub."
     # `|| true` guards against grep's exit-1-on-no-match tripping pipefail+set -e
     # before we can print the clear message below — same reasoning as StreamHub.
     tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
@@ -982,8 +1059,8 @@ install_discripper() {
     local release tag url
 
     info "Checking latest release..."
-    release="$(curl -fsSL "https://api.github.com/repos/$DISCRIPPER_REPO/releases/latest")" \
-        || die "couldn't reach the GitHub releases API."
+    release="$(github_api "https://api.github.com/repos/$DISCRIPPER_REPO/releases/latest")" \
+        || die "couldn't fetch the latest release from GitHub."
     # `|| true` guards against grep's exit-1-on-no-match tripping pipefail+set -e
     # before the clear messages below can run — same reasoning as StreamHub.
     tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
@@ -1118,11 +1195,10 @@ install_griddown() {
     local release tag url http
 
     info "Checking latest release..."
-    # -w appends the status on its own line so "no releases published yet" (404)
-    # can be told apart from a genuine network/API failure. Without that split,
-    # -f collapses both into one exit code and the step below can't react.
-    release="$(curl -sSL -w '\n%{http_code}' "https://api.github.com/repos/$GRIDDOWN_REPO/releases/latest")" \
-        || die "couldn't reach the GitHub releases API."
+    # The raw helper appends the status on its own line so "no releases published
+    # yet" (404) can be told apart from a genuine failure. Without that split, -f
+    # collapses both into one exit code and the step below can't react.
+    release="$(github_api_raw "https://api.github.com/repos/$GRIDDOWN_REPO/releases/latest")"
     http="${release##*$'\n'}"
     release="${release%$'\n'*}"
 
@@ -1135,7 +1211,7 @@ install_griddown() {
         report "GridDown" "skipped — no published release yet"
         return 0
     fi
-    [[ "$http" == "200" ]] || die "GitHub releases API returned HTTP $http."
+    [[ "$http" == "200" ]] || die "$(github_api_diagnose "$http" "$release" "$(github_had_token)")"
     # `|| true` guards against grep's exit-1-on-no-match tripping pipefail+set -e
     # before the clear messages below can run — same reasoning as StreamHub.
     tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
@@ -1275,8 +1351,8 @@ install_dreadkeep() {
     local release tag url
 
     info "Checking latest release..."
-    release="$(curl -fsSL "https://api.github.com/repos/$DREADKEEP_REPO/releases/latest")" \
-        || die "couldn't reach the GitHub releases API."
+    release="$(github_api "https://api.github.com/repos/$DREADKEEP_REPO/releases/latest")" \
+        || die "couldn't fetch the latest release from GitHub."
     tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
     # Unversioned asset name (artifactName: ${name}.AppImage). The trailing `"`
     # keeps this off any sibling .AppImage.blockmap URL.
@@ -1404,8 +1480,8 @@ install_gammagui() {
     local release tag url digest
 
     info "Checking latest release..."
-    release="$(curl -fsSL "https://api.github.com/repos/$GAMMAGUI_REPO/releases/latest")" \
-        || die "couldn't reach the GitHub releases API."
+    release="$(github_api "https://api.github.com/repos/$GAMMAGUI_REPO/releases/latest")" \
+        || die "couldn't fetch the latest release from GitHub."
     # `|| true` guards against grep's exit-1-on-no-match tripping pipefail+set -e
     # before the clear messages below can run — same reasoning as StreamHub.
     tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
@@ -1552,8 +1628,8 @@ install_lorerim() {
     local release tag url digest
 
     info "Checking latest release..."
-    release="$(curl -fsSL "https://api.github.com/repos/$LORERIM_REPO/releases/latest")" \
-        || die "couldn't reach the GitHub releases API."
+    release="$(github_api "https://api.github.com/repos/$LORERIM_REPO/releases/latest")" \
+        || die "couldn't fetch the latest release from GitHub."
     # `|| true` guards against grep's exit-1-on-no-match tripping pipefail+set -e
     # before the clear messages below can run — same reasoning as StreamHub.
     tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"

@@ -314,7 +314,7 @@ fi
 # ── GitHub release-API parsing ────────────────────────────────────────────────
 group "StreamHub release-API parsing"
 
-release="$(curl -fsSL "https://api.github.com/repos/$STREAMHUB_REPO/releases/latest" 2>/dev/null)"
+release="$(github_api "https://api.github.com/repos/$STREAMHUB_REPO/releases/latest" 2>/dev/null)"
 if [[ -z "$release" ]]; then
     fail "fetched the latest release" "empty response (rate-limited?)"
 else
@@ -403,7 +403,7 @@ fi
 # ── ConsoleVault release-API parsing ──────────────────────────────────────────
 group "ConsoleVault release-API parsing"
 
-cv_release="$(curl -fsSL "https://api.github.com/repos/$CONSOLEVAULT_REPO/releases/latest" 2>/dev/null)"
+cv_release="$(github_api "https://api.github.com/repos/$CONSOLEVAULT_REPO/releases/latest" 2>/dev/null)"
 if [[ -z "$cv_release" ]]; then
     fail "fetched the latest release" "empty response (rate-limited?)"
 else
@@ -505,7 +505,7 @@ fi
 # ── GridDown release-API parsing ──────────────────────────────────────────────
 group "GridDown release-API parsing"
 
-gd_release="$(curl -fsSL "https://api.github.com/repos/$GRIDDOWN_REPO/releases/latest" 2>/dev/null)"
+gd_release="$(github_api "https://api.github.com/repos/$GRIDDOWN_REPO/releases/latest" 2>/dev/null)"
 if [[ -z "$gd_release" || "$gd_release" == *'"Not Found"'* ]]; then
     # GridDown's first release may not be published yet; the installer dies with a
     # clear message in that case, which is the intended behaviour, not a test bug.
@@ -630,7 +630,7 @@ fi
 # ── Castle of the Dreadkeep release-API parsing ───────────────────────────────
 group "Castle of the Dreadkeep release-API parsing"
 
-dk_release="$(curl -fsSL "https://api.github.com/repos/$DREADKEEP_REPO/releases/latest" 2>/dev/null)"
+dk_release="$(github_api "https://api.github.com/repos/$DREADKEEP_REPO/releases/latest" 2>/dev/null)"
 if [[ -z "$dk_release" ]]; then
     fail "fetched the latest release" "empty response (rate-limited?)"
 else
@@ -728,7 +728,7 @@ fi
 # ── Stalker GAMMA GUI release-API parsing ─────────────────────────────────────
 group "Stalker GAMMA GUI release-API parsing"
 
-gg_release="$(curl -fsSL "https://api.github.com/repos/$GAMMAGUI_REPO/releases/latest" 2>/dev/null)"
+gg_release="$(github_api "https://api.github.com/repos/$GAMMAGUI_REPO/releases/latest" 2>/dev/null)"
 if [[ -z "$gg_release" ]]; then
     fail "fetched the latest release" "empty response (rate-limited?)"
 else
@@ -918,10 +918,78 @@ else
          "a matching version stamp returns before any pruning happens"
 fi
 
+# ── GitHub API access ─────────────────────────────────────────────────────────
+# Unauthenticated callers get 60 requests/hour per IP, and GitHub answers 403 —
+# not 429 — once they're spent. Reading that as "couldn't reach the API" sends
+# you hunting for a network fault that isn't there.
+group "GitHub API access"
+
+GH_TOKEN="from-gh-token"; GITHUB_TOKEN="from-github-token"
+check_eq "GH_TOKEN wins over GITHUB_TOKEN" "from-gh-token" "$(github_token)"
+
+unset GH_TOKEN
+check_eq "falls back to GITHUB_TOKEN" "from-github-token" "$(github_token)"
+
+GH_TOKEN=$'padded-token\n'
+check_eq "strips newlines so the auth header stays valid" "padded-token" "$(github_token)"
+unset GH_TOKEN GITHUB_TOKEN
+
+gh() { printf 'tok-from-gh\n'; }          # the real binary exists, so `have gh` is true
+check_eq "falls back to the gh CLI" "tok-from-gh" "$(github_token)"
+unset -f gh
+
+rl_body='{"message":"API rate limit exceeded for 1.2.3.4.","documentation_url":"https://docs.github.com/"}'
+
+msg="$(github_api_diagnose 403 "$rl_body" 0 2>&1)"
+check_contains "a 403 rate-limit names the rate limit" "rate limit" "$msg"
+check_contains "an unauthenticated 403 suggests a token" "GH_TOKEN" "$msg"
+
+msg="$(github_api_diagnose 403 "$rl_body" 1 2>&1)"
+if [[ "$msg" != *"gh auth login"* ]]; then
+    pass "an authenticated 403 doesn't suggest logging in again"
+else
+    fail "an authenticated 403 doesn't suggest logging in again" "$msg"
+fi
+
+msg="$(github_api_diagnose 403 '{"message":"Resource not accessible"}' 0 2>&1)"
+if [[ "$msg" != *"rate limit"* ]]; then
+    pass "a non-rate-limit 403 isn't blamed on the rate limit"
+else
+    fail "a non-rate-limit 403 isn't blamed on the rate limit" "$msg"
+fi
+
+msg="$(github_api_diagnose 404 '{"message":"Not Found"}' 0 2>&1)"
+check_contains "a 404 is reported as a missing repo or release" "404" "$msg"
+
+# Every release lookup must go through the helper, or it stays unauthenticated
+# and keeps reporting a rate-limit refusal as a network failure. Matches any
+# curl against /repos, not one spelling of it — the first version of this check
+# only looked for `curl -fsSL` and sailed past GridDown's `curl -sSL -w`.
+bypass="$(grep -n 'curl[^|]*api\.github\.com/repos' "$SCRIPT" || true)"
+if [[ -z "$bypass" ]]; then
+    pass "no release lookup bypasses the API helper"
+else
+    fail "no release lookup bypasses the API helper" "$bypass"
+fi
+
+# GridDown may not have cut a release yet, so it alone treats 404 as "skip and
+# carry on". Routing it through the helper must not cost it that.
+gd_block="$(awk '/^install_griddown\(\)/,/^}/' "$SCRIPT")"
+if grep -q 'github_api_raw' <<<"$gd_block"; then
+    pass "GridDown fetches through the helper too"
+else
+    fail "GridDown fetches through the helper too" "it still calls curl directly"
+fi
+if grep -q '"404"' <<<"$gd_block"; then
+    pass "GridDown still skips gracefully when there is no release"
+else
+    fail "GridDown still skips gracefully when there is no release" "the 404 branch is gone"
+fi
+
 # ── LoreRim Autoinstall release-API parsing ───────────────────────────────────
 group "LoreRim Autoinstall release-API parsing"
 
-lr_release="$(curl -fsSL "https://api.github.com/repos/$LORERIM_REPO/releases/latest" 2>/dev/null)"
+lr_release="$(github_api "https://api.github.com/repos/$LORERIM_REPO/releases/latest" 2>/dev/null)"
 if [[ -z "$lr_release" ]]; then
     fail "fetched the latest release" "empty response (rate-limited? no release published yet?)"
 else
@@ -1037,7 +1105,17 @@ fake_home="$tmp/home"
 mkdir -p "$fake_home"
 before="$(find "$fake_home" | sort)"
 
-out="$(HOME="$fake_home" PROJECTS_DIR="$fake_home/Projects" bash "$SCRIPT" --dry-run 2>&1)"; rc=$?
+# Hand the child a token explicitly. It runs under a fake HOME, so `gh` can't
+# find its config and the run would fall back to the 60/hour unauthenticated
+# budget — making this assertion about dry-run inertness fail for an unrelated
+# reason whenever that budget happens to be spent.
+#
+# Resolve it BEFORE the command rather than as an assignment prefix: earlier
+# prefixes are visible to later expansions, so `HOME=... GH_TOKEN="$(github_token)"`
+# would look the token up under the fake HOME and find nothing.
+gh_tok="$(github_token)"
+out="$(HOME="$fake_home" PROJECTS_DIR="$fake_home/Projects" GH_TOKEN="$gh_tok" \
+       bash "$SCRIPT" --dry-run 2>&1)"; rc=$?
 after="$(find "$fake_home" | sort)"
 
 check_eq "--dry-run exits 0" "0" "$rc"
