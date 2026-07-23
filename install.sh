@@ -99,6 +99,20 @@ GAMMAGUI_APPIMAGE="$BIN_DIR/StalkerGammaGui.AppImage"
 GAMMAGUI_REPO="pl0xuee/stalker-gamma-linux-gui"
 GAMMAGUI_ASSET="StalkerGammaGui-x86_64.AppImage"
 
+# LoreRim Autoinstall is an Avalonia/.NET AppImage that installs the LoreRim
+# Wabbajack modlist for Skyrim — Steam, Proton and Nexus handled automatically.
+# Same shape as Stalker GAMMA GUI in every way that matters here: NO
+# self-updater (re-running this script is the update path, via the version
+# stamp), CI already names the asset unversioned, and the release publishes no
+# signature or checksum file — the only digest anywhere is the per-asset sha256
+# the GitHub releases API reports, so the download is checked against that.
+# Same caveat as the others: the digest comes from the same host as the binary,
+# so it catches a corrupt or truncated download, not a swapped release.
+LORERIM_DIR="$HOME/.local/share/lorerim-autoinstall"
+LORERIM_APPIMAGE="$BIN_DIR/LorerimAutoinstall.AppImage"
+LORERIM_REPO="pl0xuee/lorerim-autoinstall"
+LORERIM_ASSET="LorerimAutoinstall-x86_64.AppImage"
+
 # CPU power profile. power-profiles-daemon forgets this on reboot, so the config
 # step also installs a user service that reapplies it at login.
 POWER_PROFILE="performance"
@@ -154,7 +168,7 @@ else
     BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; RESET=""
 fi
 STEP_N=0
-STEP_TOTAL=11    # preflight + 10 steps; recalculated below if --only is used
+STEP_TOTAL=12    # preflight + 11 steps; recalculated below if --only is used
 
 step() {
     STEP_N=$((STEP_N + 1))
@@ -227,7 +241,7 @@ Options:
   --dry-run       Print every command that would run, change nothing
   --only STEP     Run one step only:
                     packages | flatpak | agenttilecli | streamhub | consolevault
-                    discripper | griddown | dreadkeep | gammagui | config
+                    discripper | griddown | dreadkeep | gammagui | lorerim | config
   --skip-upgrade  Don't run 'pacman -Syu' first (not recommended — see below)
   -h, --help      This message
 
@@ -253,7 +267,7 @@ while [[ $# -gt 0 ]]; do
         # Guard the arg count first: `shift 2` with only one argument left
         # returns non-zero, and set -e would then exit silently — no usage, no
         # error, nothing. `./install.sh --only` would just print nothing and fail.
-        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | config)"
+        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | lorerim | config)"
                         ONLY="$2"; shift 2 ;;
         --skip-upgrade) SKIP_UPGRADE=1; shift ;;
         -h|--help)      usage; exit 0 ;;
@@ -263,8 +277,8 @@ done
 
 if [[ -n "$ONLY" ]]; then
     case "$ONLY" in
-        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|griddown|dreadkeep|gammagui|config) ;;
-        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | config" ;;
+        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|griddown|dreadkeep|gammagui|lorerim|config) ;;
+        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | lorerim | config" ;;
     esac
 fi
 wanted() { [[ -z "$ONLY" || "$ONLY" == "$1" ]]; }
@@ -1493,7 +1507,152 @@ StartupWMClass=StalkerGamma.Gui
 EOF
 }
 
-# ── 10. system config ─────────────────────────────────────────────────────────
+# ── 10. LoreRim Autoinstall (prebuilt AppImage) ───────────────────────────────
+# An Avalonia/.NET GUI that installs the LoreRim Wabbajack modlist for Skyrim —
+# Steam, Proton and Nexus handled automatically. Same GitHub-Releases-AppImage
+# shape as Stalker GAMMA GUI: no in-app updater, so the version stamp on re-run
+# is the update path. The release ships no signature or checksum asset, so the
+# download is verified against the sha256 digest the releases API reports for
+# the asset (integrity, not a signature — see the note by LORERIM_* above).
+install_lorerim() {
+    step "LoreRim Autoinstall"
+
+    local stamp="$LORERIM_DIR/.version"
+    local release tag url digest
+
+    info "Checking latest release..."
+    release="$(curl -fsSL "https://api.github.com/repos/$LORERIM_REPO/releases/latest")" \
+        || die "couldn't reach the GitHub releases API."
+    # `|| true` guards against grep's exit-1-on-no-match tripping pipefail+set -e
+    # before the clear messages below can run — same reasoning as StreamHub.
+    tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
+    # The asset name is already stable/unversioned. The trailing `"` keeps the
+    # match off any sibling asset URL that continues past `.AppImage`.
+    url="$(printf '%s' "$release" | grep -o 'https://[^"]*/LorerimAutoinstall-x86_64\.AppImage"' | head -1 | tr -d '"' || true)"
+
+    [[ -n "$tag" ]] || die "couldn't read a tag from the latest release."
+    [[ -n "$url" ]] || die "no $LORERIM_ASSET asset in release $tag."
+
+    # The releases API reports each asset's sha256 in a `digest` field — the only
+    # checksum this release publishes anywhere. Matched to the asset by NAME via
+    # a real JSON parse, not a blind grep: a second asset added to some future
+    # release must not be able to swap its digest in for the AppImage's.
+    digest="$(printf '%s' "$release" | LORERIM_ASSET="$LORERIM_ASSET" python -c '
+import json, os, sys
+for a in json.load(sys.stdin).get("assets", []):
+    if a.get("name") == os.environ["LORERIM_ASSET"]:
+        d = a.get("digest") or ""
+        if d.startswith("sha256:"):
+            print(d[len("sha256:"):])
+        break
+' 2>/dev/null || true)"
+
+    if [[ -f "$LORERIM_APPIMAGE" && -f "$stamp" ]] && [[ "$(cat "$stamp")" == "$tag" ]]; then
+        skip "LoreRim Autoinstall $tag already installed (no self-updater — a re-run picks up new releases)"
+
+        # Same launcher-repair path as the others: a matching stamp would otherwise
+        # skip this step forever, stranding a deleted .desktop or icon.
+        if [[ ! -f "$APPS_DIR/com.lorerim.autoinstall.desktop" || ! -f "$LORERIM_DIR/icon.png" ]]; then
+            info "Launcher missing — recreating it..."
+            mkdir -p "$APPS_DIR" "$LORERIM_DIR"
+            [[ -f "$LORERIM_DIR/icon.png" ]] || curl -fsSL -o "$LORERIM_DIR/icon.png" \
+                "https://raw.githubusercontent.com/$LORERIM_REPO/main/packaging/icon-256.png" \
+                || warn "couldn't fetch the icon"
+            write_lorerim_desktop
+            refresh_desktop_db
+            ok "launcher recreated"
+        fi
+
+        report "LoreRim" "$tag already installed"
+        return
+    fi
+
+    run mkdir -p "$BIN_DIR" "$LORERIM_DIR" "$APPS_DIR"
+
+    info "Downloading LoreRim Autoinstall $tag..."
+    # Temp file beside the target, moved into place only after it verifies — an
+    # interrupted download never leaves a half-written AppImage where a runnable
+    # one used to be.
+    local tmp="$LORERIM_APPIMAGE.partial"
+    if [[ $DRY_RUN -eq 1 ]]; then
+        run curl -fL --progress-bar -o "$tmp" "$url"
+        run "verify sha256 against the digest in the release's API record"
+        run chmod +x "$tmp"
+        run mv -f "$tmp" "$LORERIM_APPIMAGE"
+        run curl -fsSL -o "$LORERIM_DIR/icon.png" "https://raw.githubusercontent.com/$LORERIM_REPO/main/packaging/icon-256.png"
+        run "write $APPS_DIR/com.lorerim.autoinstall.desktop"
+        run "stamp version $tag"
+    else
+        curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
+
+        # Verify before making it executable — same stance as every other AppImage
+        # here: a binary off the internet about to run with your user's privileges.
+        # A mismatch means a corrupt or truncated download and we stop rather than
+        # chmod it.
+        verify_lorerim "$tmp" "$digest" || { rm -f "$tmp"; die "LoreRim Autoinstall download could not be verified — refusing to install it."; }
+
+        chmod +x "$tmp"
+        mv -f "$tmp" "$LORERIM_APPIMAGE"
+
+        curl -fsSL -o "$LORERIM_DIR/icon.png" \
+            "https://raw.githubusercontent.com/$LORERIM_REPO/main/packaging/icon-256.png" \
+            || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
+
+        write_lorerim_desktop
+        printf '%s\n' "$tag" > "$stamp"
+        refresh_desktop_db
+    fi
+
+    ok "LoreRim Autoinstall $tag installed to $LORERIM_APPIMAGE"
+    report "LoreRim" "$tag (prebuilt AppImage) → $LORERIM_APPIMAGE"
+}
+
+# Verify the AppImage against the sha256 digest the releases API reported for the
+# asset (the release ships no .sig or checksum file). Returns non-zero if the API
+# carried no digest or the hash doesn't match — "couldn't check" is treated as
+# "failed", never as "passed".
+verify_lorerim() {
+    local file="$1" digest="$2"
+
+    [[ -n "$digest" ]] || { warn "no sha256 digest in the release's API record — cannot verify the download"; return 1; }
+
+    local actual
+    actual="$(sha256sum "$file" | awk '{print $1}')"
+
+    if [[ "$actual" == "$digest" ]]; then
+        ok "checksum verified (sha256, from the releases API)"
+        return 0
+    fi
+
+    warn "CHECKSUM MISMATCH — the download does not match the API's sha256 digest"
+    warn "  expected: $digest"
+    warn "  got:      $actual"
+    return 1
+}
+
+# StartupWMClass matches what the app's own AppDir .desktop declares
+# (Lorerim.Gui — Avalonia takes it from the assembly name), so the taskbar
+# groups the running window under this launcher instead of showing a duplicate.
+# MimeType/%u mirror that .desktop too: the app registers as the handler for
+# jackify: links (Nexus downloads), and refresh_desktop_db's
+# update-desktop-database is what makes the scheme registration take effect.
+write_lorerim_desktop() {
+    cat > "$APPS_DIR/com.lorerim.autoinstall.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=LoreRim Autoinstall
+Comment=One-click LoreRim (Wabbajack) installer for Linux
+Exec=$LORERIM_APPIMAGE %u
+Icon=$LORERIM_DIR/icon.png
+Terminal=false
+Categories=Game;Utility;
+StartupNotify=true
+StartupWMClass=Lorerim.Gui
+MimeType=x-scheme-handler/jackify;
+EOF
+}
+
+# ── 11. system config ─────────────────────────────────────────────────────────
 configure_system() {
     step "System config"
 
@@ -2121,6 +2280,7 @@ main() {
     wanted griddown     && install_griddown
     wanted dreadkeep    && install_dreadkeep
     wanted gammagui     && install_gammagui
+    wanted lorerim      && install_lorerim
     wanted config       && configure_system
 
     if [[ $DRY_RUN -eq 1 ]]; then
@@ -2161,6 +2321,7 @@ main() {
     printf '    %sGridDown.AppImage%s     offline US maps — roads, trails, terrain\n' "$BOLD" "$RESET"
     printf '    %sCastleOfTheDreadkeep.AppImage%s  procedural castle crawler (FPS)\n' "$BOLD" "$RESET"
     printf '    %sStalkerGammaGui.AppImage%s  install, update and play S.T.A.L.K.E.R. GAMMA\n' "$BOLD" "$RESET"
+    printf '    %sLorerimAutoinstall.AppImage%s  one-click LoreRim (Wabbajack) install\n' "$BOLD" "$RESET"
     printf '    %s(or find everything in the app menu)%s\n\n' "$DIM" "$RESET"
 }
 

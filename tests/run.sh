@@ -127,6 +127,13 @@ else
          "a renamed asset would exit 1 with no message instead of the intended die"
 fi
 
+if awk '/^install_lorerim\(\)/,/^}/' "$SCRIPT" | grep -q 'grep -o .*LorerimAutoinstall.*|| true'; then
+    pass "LoreRim Autoinstall asset parsing survives a no-match (|| true)"
+else
+    fail "LoreRim Autoinstall asset parsing survives a no-match" \
+         "a renamed asset would exit 1 with no message instead of the intended die"
+fi
+
 # Both new steps must abort rather than chmod an unverified download — same stance
 # as the three above, asserted so a refactor can't quietly drop the check.
 if awk '/^install_griddown\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_griddown .* || .*die'; then
@@ -143,6 +150,11 @@ if awk '/^install_gammagui\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_gammagui .* ||
     pass "Stalker GAMMA GUI aborts the install on a failed verify"
 else
     fail "Stalker GAMMA GUI aborts on failed verify" "the download is chmod'd without a passing verify"
+fi
+if awk '/^install_lorerim\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_lorerim .* || .*die'; then
+    pass "LoreRim Autoinstall aborts the install on a failed verify"
+else
+    fail "LoreRim Autoinstall aborts on failed verify" "the download is chmod'd without a passing verify"
 fi
 
 # `--only` with no value: `shift 2` fails, set -e exits, user sees nothing.
@@ -217,7 +229,7 @@ fi
 group "Taskbar launcher list"
 
 mapfile -t tb < <(read_list "$REPO_ROOT/packages/taskbar.txt")
-check_eq "taskbar.txt parses to 12 launchers" "12" "${#tb[@]}"
+check_eq "taskbar.txt parses to 13 launchers" "13" "${#tb[@]}"
 
 # Every entry must be a .desktop name — 'applications:' prefixes or bare app
 # names silently produce a dead tile rather than an error.
@@ -234,7 +246,7 @@ fi
 # The order IS the feature — assert it, so a careless edit that reshuffles the
 # list gets caught rather than silently rearranging the taskbar.
 check_eq "launchers are in the intended order" \
-    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop com.discripper.app.desktop com.griddown.app.desktop com.dreadkeep.castle.desktop com.stalkergamma.gui.desktop" \
+    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop com.discripper.app.desktop com.griddown.app.desktop com.dreadkeep.castle.desktop com.stalkergamma.gui.desktop com.lorerim.autoinstall.desktop" \
     "${tb[*]}"
 
 # ── KDE power settings ────────────────────────────────────────────────────────
@@ -821,6 +833,118 @@ else
     printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
 fi
 
+# ── LoreRim Autoinstall release-API parsing ───────────────────────────────────
+group "LoreRim Autoinstall release-API parsing"
+
+lr_release="$(curl -fsSL "https://api.github.com/repos/$LORERIM_REPO/releases/latest" 2>/dev/null)"
+if [[ -z "$lr_release" ]]; then
+    fail "fetched the latest release" "empty response (rate-limited? no release published yet?)"
+else
+    pass "fetched the latest release"
+
+    lr_tag="$(printf '%s' "$lr_release" | grep -m1 '"tag_name"' | cut -d'"' -f4)"
+    lr_url="$(printf '%s' "$lr_release" | grep -o 'https://[^"]*/LorerimAutoinstall-x86_64\.AppImage"' | head -1 | tr -d '"')"
+
+    [[ "$lr_tag" =~ ^v[0-9]+\.[0-9]+ ]] && pass "tag parses as a version ($lr_tag)" \
+                                        || fail "tag parses as a version" "$lr_tag"
+    check_contains "asset URL ends in the AppImage name" "$LORERIM_ASSET" "$lr_url"
+    check_contains "asset URL is a GitHub download URL" "github.com" "$lr_url"
+
+    # The stable asset name is load-bearing: a versioned name would break the
+    # installer's grep and every re-run's update path.
+    if [[ "$lr_url" =~ LorerimAutoinstall-[0-9] ]]; then
+        fail "asset name carries no version" "$lr_url"
+    else
+        pass "asset name carries no version (re-run updates keep working)"
+    fi
+
+    code="$(curl -sIL -o /dev/null -w '%{http_code}' "$lr_url" 2>/dev/null)"
+    check_eq "asset URL is reachable (HTTP 200)" "200" "$code"
+fi
+
+# ── LoreRim Autoinstall checksum verification ─────────────────────────────────
+group "LoreRim Autoinstall checksum verification"
+
+if grep -qF 'verify_lorerim "$tmp" "$digest" ||' "$SCRIPT"; then
+    pass "download is verified before chmod +x"
+else
+    fail "download is verified before chmod +x" "the AppImage would be run unverified"
+fi
+
+if awk '/^verify_lorerim\(\)/,/^}/' "$SCRIPT" | grep -q 'return 1'; then
+    pass "an unverifiable checksum aborts rather than warning"
+else
+    fail "an unverifiable checksum aborts rather than warning"
+fi
+
+# The API's per-asset digest is the only checksum this release publishes — prove
+# it's actually there and the right shape, using the installer's own extraction.
+# If GitHub ever drops or renames the field, the installer would refuse every
+# download, and this is where we'd find out.
+if [[ -n "$lr_release" ]]; then
+    lr_digest="$(printf '%s' "$lr_release" | LORERIM_ASSET="$LORERIM_ASSET" python -c '
+import json, os, sys
+for a in json.load(sys.stdin).get("assets", []):
+    if a.get("name") == os.environ["LORERIM_ASSET"]:
+        d = a.get("digest") or ""
+        if d.startswith("sha256:"):
+            print(d[len("sha256:"):])
+        break
+' 2>/dev/null)"
+    if [[ "$lr_digest" =~ ^[0-9a-f]{64}$ ]]; then
+        pass "releases API carries a sha256 digest for the asset"
+    else
+        fail "releases API carries a sha256 digest" "got: ${lr_digest:-nothing}"
+    fi
+
+    # Prove the digest matches the real asset — a mismatch here means either a
+    # bad release or a broken verify path, and both would refuse every install.
+    if [[ -n "${lr_url:-}" && "$lr_digest" =~ ^[0-9a-f]{64}$ ]]; then
+        lrd="$(mktemp -d)"
+        if curl -fsSL "$lr_url" -o "$lrd/app.AppImage" 2>/dev/null; then
+            lr_actual="$(sha256sum "$lrd/app.AppImage" | awk '{print $1}')"
+            check_eq "real release matches the API's sha256 digest" "$lr_digest" "$lr_actual"
+        else
+            printf '  %s·%s couldn'\''t download the release — skipping live checksum\n' "$DIM" "$RESET"
+        fi
+        rm -rf "$lrd"
+    fi
+fi
+
+# ── LoreRim Autoinstall .desktop file ─────────────────────────────────────────
+group "LoreRim Autoinstall .desktop file"
+
+APPS_DIR="$tmp"
+LORERIM_APPIMAGE="/home/user/.local/bin/LorerimAutoinstall.AppImage"
+LORERIM_DIR="/home/user/.local/share/lorerim-autoinstall"
+write_lorerim_desktop
+
+lr_desktop="$tmp/com.lorerim.autoinstall.desktop"
+[[ -f "$lr_desktop" ]] && pass ".desktop file is written" || fail ".desktop file is written"
+lr_content="$(cat "$lr_desktop" 2>/dev/null || true)"
+
+check_contains "has [Desktop Entry] header" "[Desktop Entry]" "$lr_content"
+check_contains "Exec points at the AppImage" "Exec=$LORERIM_APPIMAGE" "$lr_content"
+check_contains "Icon uses an absolute path"  "Icon=$LORERIM_DIR/icon.png" "$lr_content"
+check_contains "Type=Application" "Type=Application" "$lr_content"
+# The WM_CLASS comes from the .NET assembly name, matching the app's own AppDir
+# .desktop — a drift here brings back the duplicate-taskbar-icon problem.
+check_contains "StartupWMClass matches the Avalonia assembly" "StartupWMClass=Lorerim.Gui" "$lr_content"
+# The app's own .desktop registers the jackify: URL scheme (Nexus download
+# links); dropping it here would silently break click-to-download.
+check_contains "registers the jackify: scheme handler" "MimeType=x-scheme-handler/jackify;" "$lr_content"
+check_contains "Exec takes the URL argument (%u)" "%u" "$lr_content"
+
+if have desktop-file-validate; then
+    if err="$(desktop-file-validate "$lr_desktop" 2>&1)"; then
+        pass "passes desktop-file-validate"
+    else
+        fail "passes desktop-file-validate" "$err"
+    fi
+else
+    printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
+fi
+
 # ── --dry-run is genuinely inert ──────────────────────────────────────────────
 group "--dry-run changes nothing"
 
@@ -841,7 +965,7 @@ check_contains "--dry-run never invokes sudo" "no sudo needed" "$out"
 # A dry run must not leave a half-downloaded AppImage anywhere.
 if [[ -e "$fake_home/.local/bin/StreamHub.AppImage" || -e "$fake_home/.local/bin/ConsoleVault.AppImage" \
    || -e "$fake_home/.local/bin/GridDown.AppImage" || -e "$fake_home/.local/bin/CastleOfTheDreadkeep.AppImage" \
-   || -e "$fake_home/.local/bin/StalkerGammaGui.AppImage" ]]; then
+   || -e "$fake_home/.local/bin/StalkerGammaGui.AppImage" || -e "$fake_home/.local/bin/LorerimAutoinstall.AppImage" ]]; then
     fail "--dry-run downloads no AppImage"
 else
     pass "--dry-run downloads no AppImage"
