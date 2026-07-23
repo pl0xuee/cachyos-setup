@@ -809,6 +809,30 @@ refresh_desktop_db() {
     return 0
 }
 
+# KDE binds a window to a launcher by StartupWMClass. A .desktop left behind by
+# a manual install of the same app claims the class we write, and the taskbar
+# takes whichever it finds first — when that's the stray, the pinned icon never
+# lights up and the app opens a second entry beside it. Ours is the one the
+# panel is pinned to and the one that tracks the AppImage this script manages,
+# so any other launcher claiming the class goes.
+prune_competing_launchers() {
+    local keep="$1" wmclass="$2" f removed=0
+    [[ -d "$APPS_DIR" ]] || return 0
+    for f in "$APPS_DIR"/*.desktop; do
+        [[ -f "$f" ]] || continue                       # no match — the glob stayed literal
+        [[ "${f##*/}" == "$keep" ]] && continue
+        grep -qx "StartupWMClass=$wmclass" "$f" || continue
+        if [[ $DRY_RUN -eq 1 ]]; then
+            run "rm $f (claims StartupWMClass=$wmclass — splits the taskbar icon with $keep)"
+        else
+            rm -f "$f" && removed=1
+            warn "removed ${f##*/} — it claimed the same window class as $keep, which split the taskbar icon"
+        fi
+    done
+    [[ $removed -eq 1 ]] && refresh_desktop_db
+    return 0
+}
+
 # ── 5. ConsoleVault (prebuilt AppImage) ───────────────────────────────────────
 # A Tauri launcher for a physical ROM collection (SNES/N64/PS1/PS2/PS3). Like
 # StreamHub it's a self-updating AppImage fetched from GitHub Releases, so this
@@ -1422,6 +1446,11 @@ for a in json.load(sys.stdin).get("assets", []):
             ok "launcher recreated"
         fi
 
+        # Outside that branch on purpose: a stray launcher can sit beside a
+        # perfectly good one of ours, and the repair above only fires when ours
+        # is missing or stale.
+        prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui"
+
         report "Stalker GAMMA GUI" "$tag already installed"
         return
     fi
@@ -1440,6 +1469,7 @@ for a in json.load(sys.stdin).get("assets", []):
         run mv -f "$tmp" "$GAMMAGUI_APPIMAGE"
         run curl -fsSL -o "$GAMMAGUI_DIR/icon.png" "https://raw.githubusercontent.com/$GAMMAGUI_REPO/main/packaging/icon-256.png"
         run "write $APPS_DIR/com.stalkergamma.gui.desktop"
+        prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui"
         run "stamp version $tag"
     else
         curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
@@ -1458,6 +1488,7 @@ for a in json.load(sys.stdin).get("assets", []):
             || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
 
         write_gammagui_desktop
+        prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui"
         printf '%s\n' "$tag" > "$stamp"
         refresh_desktop_db
     fi

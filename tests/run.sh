@@ -833,6 +833,91 @@ else
     printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
 fi
 
+# ── competing launcher pruning ────────────────────────────────────────────────
+# A launcher left behind by a manual install claims the same StartupWMClass as
+# ours, so KDE binds the running window to whichever it finds first. When it
+# picks the stray, the pinned icon never lights up and the app opens a second
+# taskbar entry beside it.
+group "Competing launcher pruning"
+
+# The real one shells out to kbuildsycoca6, which would rebuild the running
+# session's KDE cache — the suite installs nothing and changes nothing.
+# Nothing later in this file calls it in-process (the --dry-run tests run
+# install.sh as a subprocess), so a no-op for the rest of the run is safe.
+refresh_desktop_db() { :; }
+
+prune_dir="$tmp/prune"
+mkdir -p "$prune_dir"
+APPS_DIR="$prune_dir"
+GAMMAGUI_APPIMAGE="/home/user/.local/bin/StalkerGammaGui.AppImage"
+GAMMAGUI_DIR="/home/user/.local/share/stalkergammagui"
+write_gammagui_desktop
+
+# what a manual install leaves behind: same window class, different Exec
+cat > "$prune_dir/stalker-gamma-gui.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Stalker GAMMA GUI
+Exec="/home/user/.local/bin/StalkerGammaGui-x86_64.appimage"
+Icon=stalker-gamma-gui
+StartupWMClass=StalkerGamma.Gui
+EOF
+
+# an unrelated launcher that must survive untouched
+cat > "$prune_dir/com.example.other.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Something Else
+Exec=/usr/bin/true
+StartupWMClass=Something.Else
+EOF
+
+DRY_RUN=0
+prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui"
+
+[[ ! -f "$prune_dir/stalker-gamma-gui.desktop" ]] \
+    && pass "removes a stray launcher claiming the same StartupWMClass" \
+    || fail "removes a stray launcher claiming the same StartupWMClass" "it survived"
+[[ -f "$prune_dir/com.stalkergamma.gui.desktop" ]] \
+    && pass "keeps our own launcher" \
+    || fail "keeps our own launcher" "it was deleted"
+[[ -f "$prune_dir/com.example.other.desktop" ]] \
+    && pass "leaves unrelated launchers alone" \
+    || fail "leaves unrelated launchers alone" "it was deleted"
+
+# --dry-run must not delete: the suite guarantees a dry run changes nothing.
+prune_dry="$tmp/prune-dry"
+mkdir -p "$prune_dry"
+APPS_DIR="$prune_dry"
+write_gammagui_desktop
+cp "$prune_dir/com.example.other.desktop" "$prune_dry/" 2>/dev/null
+cat > "$prune_dry/stalker-gamma-gui.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Stalker GAMMA GUI
+StartupWMClass=StalkerGamma.Gui
+EOF
+
+DRY_RUN=1
+prune_competing_launchers "com.stalkergamma.gui.desktop" "StalkerGamma.Gui" >/dev/null
+DRY_RUN=0
+
+[[ -f "$prune_dry/stalker-gamma-gui.desktop" ]] \
+    && pass "--dry-run reports but deletes nothing" \
+    || fail "--dry-run reports but deletes nothing" "the stray was removed during a dry run"
+
+# A stray can sit beside a perfectly good launcher, so the prune cannot live in
+# the launcher-repair branch — that only fires when ours is missing or stale.
+# It has to run on the already-installed path too, or a re-run never fixes it.
+gg_skip_block="$(awk '/^install_gammagui\(\)/,/^}/' "$SCRIPT" \
+                 | awk '/already installed \(no self-updater/,/^        return$/')"
+if grep -q 'prune_competing_launchers' <<<"$gg_skip_block"; then
+    pass "the already-installed path still prunes strays"
+else
+    fail "the already-installed path still prunes strays" \
+         "a matching version stamp returns before any pruning happens"
+fi
+
 # ── LoreRim Autoinstall release-API parsing ───────────────────────────────────
 group "LoreRim Autoinstall release-API parsing"
 
