@@ -134,6 +134,23 @@ else
          "a renamed asset would exit 1 with no message instead of the intended die"
 fi
 
+if awk '/^install_wotlk\(\)/,/^}/' "$SCRIPT" | grep -q 'grep -o .*WowWotlkAutoinstall.*|| true'; then
+    pass "WotLK Autoinstall asset parsing survives a no-match (|| true)"
+else
+    fail "WotLK Autoinstall asset parsing survives a no-match" \
+         "a renamed asset would exit 1 with no message instead of the intended die"
+fi
+
+# The SHA256SUMS URL is grepped out of the same release JSON, and a no-match
+# there has to reach verify_wotlk's "cannot verify" message rather than exiting
+# silently under pipefail.
+if awk '/^install_wotlk\(\)/,/^}/' "$SCRIPT" | grep -q 'grep -o .*download.*SUMS.*|| true'; then
+    pass "WotLK SHA256SUMS parsing survives a no-match (|| true)"
+else
+    fail "WotLK SHA256SUMS parsing survives a no-match" \
+         "a release without SHA256SUMS would exit 1 with no message"
+fi
+
 # Both new steps must abort rather than chmod an unverified download — same stance
 # as the three above, asserted so a refactor can't quietly drop the check.
 if awk '/^install_griddown\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_griddown .* || .*die'; then
@@ -155,6 +172,11 @@ if awk '/^install_lorerim\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_lorerim .* || .
     pass "LoreRim Autoinstall aborts the install on a failed verify"
 else
     fail "LoreRim Autoinstall aborts on failed verify" "the download is chmod'd without a passing verify"
+fi
+if awk '/^install_wotlk\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_wotlk .* || .*die'; then
+    pass "WotLK Autoinstall aborts the install on a failed verify"
+else
+    fail "WotLK Autoinstall aborts on failed verify" "the download is chmod'd without a passing verify"
 fi
 
 # `--only` with no value: `shift 2` fails, set -e exits, user sees nothing.
@@ -229,7 +251,7 @@ fi
 group "Taskbar launcher list"
 
 mapfile -t tb < <(read_list "$REPO_ROOT/packages/taskbar.txt")
-check_eq "taskbar.txt parses to 13 launchers" "13" "${#tb[@]}"
+check_eq "taskbar.txt parses to 14 launchers" "14" "${#tb[@]}"
 
 # Every entry must be a .desktop name — 'applications:' prefixes or bare app
 # names silently produce a dead tile rather than an error.
@@ -246,7 +268,7 @@ fi
 # The order IS the feature — assert it, so a careless edit that reshuffles the
 # list gets caught rather than silently rearranging the taskbar.
 check_eq "launchers are in the intended order" \
-    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop com.discripper.app.desktop com.griddown.app.desktop com.dreadkeep.castle.desktop com.stalkergamma.gui.desktop com.lorerim.autoinstall.desktop" \
+    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop com.discripper.app.desktop com.griddown.app.desktop com.dreadkeep.castle.desktop com.stalkergamma.gui.desktop com.lorerim.autoinstall.desktop com.wowwotlk.autoinstall.desktop" \
     "${tb[*]}"
 
 # ── KDE power settings ────────────────────────────────────────────────────────
@@ -989,7 +1011,7 @@ fi
 # Every app that writes a launcher prunes competitors for it, on both the
 # already-installed path and the install path — so a new app added later can't
 # quietly skip it.
-for app in streamhub consolevault discripper griddown dreadkeep gammagui lorerim; do
+for app in streamhub consolevault discripper griddown dreadkeep gammagui lorerim wotlk; do
     app_block="$(awk "/^install_$app\\(\\)/,/^}/" "$SCRIPT")"
     n="$(grep -c 'prune_competing_launchers' <<<"$app_block")"
     if [[ "$n" -ge 2 ]]; then
@@ -1187,6 +1209,185 @@ else
     printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
 fi
 
+# ── WotLK Autoinstall release-API parsing ─────────────────────────────────────
+group "WotLK Autoinstall release-API parsing"
+
+wk_release="$(github_api "https://api.github.com/repos/$WOTLK_REPO/releases/latest" 2>/dev/null)"
+if [[ -z "$wk_release" ]]; then
+    fail "fetched the latest release" "empty response (rate-limited? no release published yet?)"
+else
+    pass "fetched the latest release"
+
+    wk_tag="$(printf '%s' "$wk_release" | grep -m1 '"tag_name"' | cut -d'"' -f4)"
+    wk_url="$(printf '%s' "$wk_release" | grep -o 'https://[^"]*/WowWotlkAutoinstall-x86_64\.AppImage"' | head -1 | tr -d '"')"
+    wk_sums_url="$(printf '%s' "$wk_release" | grep -o "https://[^\"]*/download/[^\"]*/$WOTLK_SUMS\"" | head -1 | tr -d '"')"
+
+    [[ "$wk_tag" =~ ^v[0-9]+\.[0-9]+ ]] && pass "tag parses as a version ($wk_tag)" \
+                                        || fail "tag parses as a version" "$wk_tag"
+    check_contains "asset URL ends in the AppImage name" "$WOTLK_ASSET" "$wk_url"
+    check_contains "asset URL is a GitHub download URL" "github.com" "$wk_url"
+
+    # The stable asset name is load-bearing: a versioned name would break the
+    # installer's grep and every re-run's update path.
+    if [[ "$wk_url" =~ WowWotlkAutoinstall-[0-9] ]]; then
+        fail "asset name carries no version" "$wk_url"
+    else
+        pass "asset name carries no version (re-run updates keep working)"
+    fi
+
+    # The whole verify path hangs off this asset still being published.
+    check_contains "release publishes a $WOTLK_SUMS asset" "/$WOTLK_SUMS" "$wk_sums_url"
+
+    code="$(curl -sIL -o /dev/null -w '%{http_code}' "$wk_url" 2>/dev/null)"
+    check_eq "asset URL is reachable (HTTP 200)" "200" "$code"
+fi
+
+# ── WotLK Autoinstall checksum verification ───────────────────────────────────
+group "WotLK Autoinstall checksum verification"
+
+if grep -qF 'verify_wotlk "$tmp" "$sums_url" "$digest" ||' "$SCRIPT"; then
+    pass "download is verified before chmod +x"
+else
+    fail "download is verified before chmod +x" "the AppImage would be run unverified"
+fi
+
+if awk '/^verify_wotlk\(\)/,/^}/' "$SCRIPT" | grep -q 'return 1'; then
+    pass "an unverifiable checksum aborts rather than warning"
+else
+    fail "an unverifiable checksum aborts rather than warning"
+fi
+
+# verify_wotlk exercised for real against local SHA256SUMS files served over
+# file:// — the parsing rules below are the ones that decide whether a bad
+# download gets chmod'd, so they're tested by behaviour, not by grepping source.
+wkv="$tmp/wotlk-verify"; mkdir -p "$wkv"
+printf 'the payload\n' > "$wkv/app.AppImage"
+wk_real="$(sha256sum "$wkv/app.AppImage" | awk '{print $1}')"
+wk_other="$(printf 'something else\n' | sha256sum | awk '{print $1}')"
+
+printf '%s  %s\n' "$wk_real" "$WOTLK_ASSET" > "$wkv/good.sums"
+if verify_wotlk "$wkv/app.AppImage" "file://$wkv/good.sums" "" >/dev/null 2>&1; then
+    pass "a matching sha256 verifies"
+else
+    fail "a matching sha256 verifies" "a good download was refused"
+fi
+
+printf '%s  %s\n' "$wk_other" "$WOTLK_ASSET" > "$wkv/bad.sums"
+if verify_wotlk "$wkv/app.AppImage" "file://$wkv/bad.sums" "" >/dev/null 2>&1; then
+    fail "a mismatched sha256 is refused" "a corrupt download would be chmod'd and run"
+else
+    pass "a mismatched sha256 is refused"
+fi
+
+# A second binary in the release must not be able to stand in for ours: the
+# line is picked by asset name, not by being first in the file.
+{ printf '%s  SomeOtherThing.AppImage\n' "$wk_other"
+  printf '%s  %s\n' "$wk_real" "$WOTLK_ASSET"; } > "$wkv/multi.sums"
+if verify_wotlk "$wkv/app.AppImage" "file://$wkv/multi.sums" "" >/dev/null 2>&1; then
+    pass "the sha256 is matched to our asset by name, not by position"
+else
+    fail "the sha256 is matched to our asset by name" "it read the first line instead of ours"
+fi
+
+# No line for our asset at all is "couldn't check", which must fail closed.
+printf '%s  SomeOtherThing.AppImage\n' "$wk_other" > "$wkv/absent.sums"
+if verify_wotlk "$wkv/app.AppImage" "file://$wkv/absent.sums" "" >/dev/null 2>&1; then
+    fail "a SHA256SUMS with no line for our asset is refused" "couldn't-check was treated as passed"
+else
+    pass "a SHA256SUMS with no line for our asset is refused"
+fi
+
+# Same for a missing SHA256SUMS asset and an unfetchable one.
+if verify_wotlk "$wkv/app.AppImage" "" "$wk_real" >/dev/null 2>&1; then
+    fail "a missing $WOTLK_SUMS asset is refused" "couldn't-check was treated as passed"
+else
+    pass "a missing $WOTLK_SUMS asset is refused"
+fi
+if verify_wotlk "$wkv/app.AppImage" "file://$wkv/nope.sums" "" >/dev/null 2>&1; then
+    fail "an unfetchable $WOTLK_SUMS is refused" "couldn't-check was treated as passed"
+else
+    pass "an unfetchable $WOTLK_SUMS is refused"
+fi
+
+# SHA256SUMS says one thing, the releases API another — that's an asset nobody
+# re-hashed, and it fails rather than picking a winner.
+if verify_wotlk "$wkv/app.AppImage" "file://$wkv/good.sums" "$wk_other" >/dev/null 2>&1; then
+    fail "a SHA256SUMS/API digest disagreement is refused" "one record silently overrode the other"
+else
+    pass "a SHA256SUMS/API digest disagreement is refused"
+fi
+
+# sha256sum's binary-mode marker ('*name') is still our asset's line.
+printf '%s *%s\n' "$wk_real" "$WOTLK_ASSET" > "$wkv/binmode.sums"
+if verify_wotlk "$wkv/app.AppImage" "file://$wkv/binmode.sums" "" >/dev/null 2>&1; then
+    pass "a binary-mode ('*name') SHA256SUMS line is understood"
+else
+    fail "a binary-mode ('*name') SHA256SUMS line is understood" "a valid release would be refused"
+fi
+
+# And the real release must pass all of it — a failure here means either a bad
+# release or a broken verify path, and both would refuse every install.
+if [[ -n "${wk_url:-}" && -n "${wk_sums_url:-}" ]]; then
+    wkd="$(mktemp -d)"
+    if curl -fsSL "$wk_url" -o "$wkd/app.AppImage" 2>/dev/null; then
+        wk_api_digest="$(printf '%s' "$wk_release" | WOTLK_ASSET="$WOTLK_ASSET" python -c '
+import json, os, sys
+for a in json.load(sys.stdin).get("assets", []):
+    if a.get("name") == os.environ["WOTLK_ASSET"]:
+        d = a.get("digest") or ""
+        if d.startswith("sha256:"):
+            print(d[len("sha256:"):])
+        break
+' 2>/dev/null)"
+        if verify_wotlk "$wkd/app.AppImage" "$wk_sums_url" "$wk_api_digest" >/dev/null 2>&1; then
+            pass "the real release verifies against its own $WOTLK_SUMS"
+        else
+            fail "the real release verifies against its own $WOTLK_SUMS" \
+                 "the published binary does not match the published checksum"
+        fi
+    else
+        printf '  %s·%s couldn'\''t download the release — skipping live checksum\n' "$DIM" "$RESET"
+    fi
+    rm -rf "$wkd"
+fi
+
+# ── WotLK Autoinstall .desktop file ───────────────────────────────────────────
+group "WotLK Autoinstall .desktop file"
+
+APPS_DIR="$tmp"
+WOTLK_APPIMAGE="/home/user/.local/bin/WowWotlkAutoinstall.AppImage"
+WOTLK_DIR="/home/user/.local/share/wow-wotlk-autoinstall"
+write_wotlk_desktop
+
+wk_desktop="$tmp/com.wowwotlk.autoinstall.desktop"
+[[ -f "$wk_desktop" ]] && pass ".desktop file is written" || fail ".desktop file is written"
+wk_content="$(cat "$wk_desktop" 2>/dev/null || true)"
+
+check_contains "has [Desktop Entry] header" "[Desktop Entry]" "$wk_content"
+check_contains "Exec points at the AppImage" "Exec=$WOTLK_APPIMAGE" "$wk_content"
+check_contains "Icon uses an absolute path"  "Icon=$WOTLK_DIR/icon.png" "$wk_content"
+check_contains "Type=Application" "Type=Application" "$wk_content"
+# The WM_CLASS comes from the .NET assembly name, matching the app's own AppDir
+# .desktop — a drift here brings back the duplicate-taskbar-icon problem.
+check_contains "StartupWMClass matches the Avalonia assembly" "StartupWMClass=WowWotlk.Gui" "$wk_content"
+# Unlike LoreRim this app registers no URL scheme, so a %u would be handed to an
+# Exec that ignores it. Assert it stays off rather than getting copy-pasted in.
+if grep -q '%u' <<<"$wk_content"; then
+    fail "Exec takes no URL argument" "a %u was added for an app that handles no scheme"
+else
+    pass "Exec takes no URL argument (this app registers no scheme)"
+fi
+
+if have desktop-file-validate; then
+    if err="$(desktop-file-validate "$wk_desktop" 2>&1)"; then
+        pass "passes desktop-file-validate"
+    else
+        fail "passes desktop-file-validate" "$err"
+    fi
+else
+    printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
+fi
+
 # ── --dry-run is genuinely inert ──────────────────────────────────────────────
 group "--dry-run changes nothing"
 
@@ -1217,7 +1418,8 @@ check_contains "--dry-run never invokes sudo" "no sudo needed" "$out"
 # A dry run must not leave a half-downloaded AppImage anywhere.
 if [[ -e "$fake_home/.local/bin/StreamHub.AppImage" || -e "$fake_home/.local/bin/ConsoleVault.AppImage" \
    || -e "$fake_home/.local/bin/GridDown.AppImage" || -e "$fake_home/.local/bin/CastleOfTheDreadkeep.AppImage" \
-   || -e "$fake_home/.local/bin/StalkerGammaGui.AppImage" || -e "$fake_home/.local/bin/LorerimAutoinstall.AppImage" ]]; then
+   || -e "$fake_home/.local/bin/StalkerGammaGui.AppImage" || -e "$fake_home/.local/bin/LorerimAutoinstall.AppImage" \
+   || -e "$fake_home/.local/bin/WowWotlkAutoinstall.AppImage" ]]; then
     fail "--dry-run downloads no AppImage"
 else
     pass "--dry-run downloads no AppImage"

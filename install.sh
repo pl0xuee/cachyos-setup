@@ -113,6 +113,22 @@ LORERIM_APPIMAGE="$BIN_DIR/LorerimAutoinstall.AppImage"
 LORERIM_REPO="pl0xuee/lorerim-autoinstall"
 LORERIM_ASSET="LorerimAutoinstall-x86_64.AppImage"
 
+# WotLK Autoinstall is an Avalonia/.NET AppImage that installs a World of
+# Warcraft 3.3.5a client for a local server — realmlist, addons, and a Steam
+# shortcut under Proton. Same no-self-updater shape as Stalker GAMMA GUI and
+# LoreRim (the version stamp is the update path, CI already names the asset
+# unversioned), with one difference that's worth the extra code below: this
+# release is the first here to publish a real checksum FILE (SHA256SUMS)
+# alongside the binary, so that — not just the API's per-asset digest — is what
+# the download is checked against. Both still come from the same host as the
+# binary, so this is integrity, not authenticity: it catches a corrupt,
+# truncated or re-uploaded asset, not a maliciously cut release.
+WOTLK_DIR="$HOME/.local/share/wow-wotlk-autoinstall"
+WOTLK_APPIMAGE="$BIN_DIR/WowWotlkAutoinstall.AppImage"
+WOTLK_REPO="pl0xuee/wow-wotlk-autoinstall"
+WOTLK_ASSET="WowWotlkAutoinstall-x86_64.AppImage"
+WOTLK_SUMS="SHA256SUMS"
+
 # CPU power profile. power-profiles-daemon forgets this on reboot, so the config
 # step also installs a user service that reapplies it at login.
 POWER_PROFILE="performance"
@@ -168,7 +184,7 @@ else
     BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; RESET=""
 fi
 STEP_N=0
-STEP_TOTAL=12    # preflight + 11 steps; recalculated below if --only is used
+STEP_TOTAL=13    # preflight + 12 steps; recalculated below if --only is used
 
 step() {
     STEP_N=$((STEP_N + 1))
@@ -324,7 +340,8 @@ Options:
   --dry-run       Print every command that would run, change nothing
   --only STEP     Run one step only:
                     packages | flatpak | agenttilecli | streamhub | consolevault
-                    discripper | griddown | dreadkeep | gammagui | lorerim | config
+                    discripper | griddown | dreadkeep | gammagui | lorerim
+                    wotlk | config
   --skip-upgrade  Don't run 'pacman -Syu' first (not recommended — see below)
   -h, --help      This message
 
@@ -350,7 +367,7 @@ while [[ $# -gt 0 ]]; do
         # Guard the arg count first: `shift 2` with only one argument left
         # returns non-zero, and set -e would then exit silently — no usage, no
         # error, nothing. `./install.sh --only` would just print nothing and fail.
-        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | lorerim | config)"
+        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | lorerim | wotlk | config)"
                         ONLY="$2"; shift 2 ;;
         --skip-upgrade) SKIP_UPGRADE=1; shift ;;
         -h|--help)      usage; exit 0 ;;
@@ -360,8 +377,8 @@ done
 
 if [[ -n "$ONLY" ]]; then
     case "$ONLY" in
-        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|griddown|dreadkeep|gammagui|lorerim|config) ;;
-        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | lorerim | config" ;;
+        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|griddown|dreadkeep|gammagui|lorerim|wotlk|config) ;;
+        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | lorerim | wotlk | config" ;;
     esac
 fi
 wanted() { [[ -z "$ONLY" || "$ONLY" == "$1" ]]; }
@@ -1815,7 +1832,184 @@ MimeType=x-scheme-handler/jackify;
 EOF
 }
 
-# ── 11. system config ─────────────────────────────────────────────────────────
+# ── 11. WotLK Autoinstall (prebuilt AppImage) ─────────────────────────────────
+# An Avalonia/.NET GUI that installs a World of Warcraft 3.3.5a client for a
+# local server — client download, realmlist, addons and a Steam/Proton shortcut.
+# Same GitHub-Releases-AppImage shape as Stalker GAMMA GUI and LoreRim: no
+# in-app updater, so the version stamp on re-run is the update path. Unlike
+# those two, the release publishes a SHA256SUMS file, which is what the download
+# is verified against — see the note by WOTLK_* above for what that does and
+# doesn't prove.
+install_wotlk() {
+    step "WotLK Autoinstall"
+
+    local stamp="$WOTLK_DIR/.version"
+    local release tag url sums_url digest
+
+    info "Checking latest release..."
+    release="$(github_api "https://api.github.com/repos/$WOTLK_REPO/releases/latest")" \
+        || die "couldn't fetch the latest release from GitHub."
+    # `|| true` guards against grep's exit-1-on-no-match tripping pipefail+set -e
+    # before the clear messages below can run — same reasoning as StreamHub.
+    tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
+    # The asset name is already stable/unversioned. The trailing `"` keeps the
+    # match off any sibling asset URL that continues past `.AppImage`.
+    url="$(printf '%s' "$release" | grep -o 'https://[^"]*/WowWotlkAutoinstall-x86_64\.AppImage"' | head -1 | tr -d '"' || true)"
+    # Anchored on /download/ so this can only match a release asset URL, and the
+    # trailing `"` keeps it off anything whose name merely starts with SHA256SUMS.
+    sums_url="$(printf '%s' "$release" | grep -o "https://[^\"]*/download/[^\"]*/$WOTLK_SUMS\"" | head -1 | tr -d '"' || true)"
+
+    [[ -n "$tag" ]] || die "couldn't read a tag from the latest release."
+    [[ -n "$url" ]] || die "no $WOTLK_ASSET asset in release $tag."
+
+    # The releases API also reports a per-asset sha256, matched to the asset by
+    # NAME via a real JSON parse rather than a blind grep: a second asset added
+    # to some future release must not be able to swap its digest in for the
+    # AppImage's. Cross-checked against SHA256SUMS below — SHA256SUMS is written
+    # by CI at build time, this is computed by GitHub on upload, so agreement
+    # says the file being served is the file CI built.
+    digest="$(printf '%s' "$release" | WOTLK_ASSET="$WOTLK_ASSET" python -c '
+import json, os, sys
+for a in json.load(sys.stdin).get("assets", []):
+    if a.get("name") == os.environ["WOTLK_ASSET"]:
+        d = a.get("digest") or ""
+        if d.startswith("sha256:"):
+            print(d[len("sha256:"):])
+        break
+' 2>/dev/null || true)"
+
+    if [[ -f "$WOTLK_APPIMAGE" && -f "$stamp" ]] && [[ "$(cat "$stamp")" == "$tag" ]]; then
+        skip "WotLK Autoinstall $tag already installed (no self-updater — a re-run picks up new releases)"
+
+        # Same launcher-repair path as the others: a matching stamp would otherwise
+        # skip this step forever, stranding a deleted .desktop or icon.
+        if [[ ! -f "$APPS_DIR/com.wowwotlk.autoinstall.desktop" || ! -f "$WOTLK_DIR/icon.png" ]]; then
+            info "Launcher missing — recreating it..."
+            mkdir -p "$APPS_DIR" "$WOTLK_DIR"
+            [[ -f "$WOTLK_DIR/icon.png" ]] || curl -fsSL -o "$WOTLK_DIR/icon.png" \
+                "https://raw.githubusercontent.com/$WOTLK_REPO/main/packaging/icon-256.png" \
+                || warn "couldn't fetch the icon"
+            write_wotlk_desktop
+            refresh_desktop_db
+            ok "launcher recreated"
+        fi
+
+        # Outside the repair branch above on purpose: that only fires when ours
+        # is missing or stale, and a stray can sit beside a perfectly good one.
+        prune_competing_launchers "com.wowwotlk.autoinstall.desktop"
+
+        report "WotLK" "$tag already installed"
+        return
+    fi
+
+    run mkdir -p "$BIN_DIR" "$WOTLK_DIR" "$APPS_DIR"
+
+    info "Downloading WotLK Autoinstall $tag..."
+    # Temp file beside the target, moved into place only after it verifies — an
+    # interrupted download never leaves a half-written AppImage where a runnable
+    # one used to be.
+    local tmp="$WOTLK_APPIMAGE.partial"
+    if [[ $DRY_RUN -eq 1 ]]; then
+        run curl -fL --progress-bar -o "$tmp" "$url"
+        run "verify sha256 against the release's SHA256SUMS"
+        run chmod +x "$tmp"
+        run mv -f "$tmp" "$WOTLK_APPIMAGE"
+        run curl -fsSL -o "$WOTLK_DIR/icon.png" "https://raw.githubusercontent.com/$WOTLK_REPO/main/packaging/icon-256.png"
+        run "write $APPS_DIR/com.wowwotlk.autoinstall.desktop"
+        prune_competing_launchers "com.wowwotlk.autoinstall.desktop"
+        run "stamp version $tag"
+    else
+        curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
+
+        # Verify before making it executable — same stance as every other AppImage
+        # here: a binary off the internet about to run with your user's privileges.
+        # A mismatch means a corrupt or truncated download and we stop rather than
+        # chmod it.
+        verify_wotlk "$tmp" "$sums_url" "$digest" || { rm -f "$tmp"; die "WotLK Autoinstall download could not be verified — refusing to install it."; }
+
+        chmod +x "$tmp"
+        mv -f "$tmp" "$WOTLK_APPIMAGE"
+
+        curl -fsSL -o "$WOTLK_DIR/icon.png" \
+            "https://raw.githubusercontent.com/$WOTLK_REPO/main/packaging/icon-256.png" \
+            || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
+
+        write_wotlk_desktop
+        prune_competing_launchers "com.wowwotlk.autoinstall.desktop"
+        printf '%s\n' "$tag" > "$stamp"
+        refresh_desktop_db
+    fi
+
+    ok "WotLK Autoinstall $tag installed to $WOTLK_APPIMAGE"
+    report "WotLK" "$tag (prebuilt AppImage) → $WOTLK_APPIMAGE"
+}
+
+# Verify the AppImage against the sha256 in the release's SHA256SUMS asset, and
+# require the API's per-asset digest to agree when the API reports one. Returns
+# non-zero if SHA256SUMS is missing, carries no line for our asset, or either
+# hash disagrees — "couldn't check" is treated as "failed", never as "passed".
+verify_wotlk() {
+    local file="$1" sums_url="$2" digest="$3"
+
+    [[ -n "$sums_url" ]] || { warn "no $WOTLK_SUMS asset in the release — cannot verify the download"; return 1; }
+
+    local sums
+    sums="$(curl -fsSL "$sums_url" 2>/dev/null)" \
+        || { warn "couldn't fetch $WOTLK_SUMS — cannot verify the download"; return 1; }
+
+    # Pull the line for OUR asset by name rather than taking the first hash in
+    # the file: a release that later adds a second binary would otherwise be
+    # checked against whichever line happened to come first.
+    local expected
+    expected="$(printf '%s\n' "$sums" | awk -v n="$WOTLK_ASSET" '$2 == n || $2 == "*" n { print $1; exit }')"
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] \
+        || { warn "no sha256 for $WOTLK_ASSET in $WOTLK_SUMS — cannot verify the download"; return 1; }
+
+    # A disagreement here means the asset being served isn't the one CI hashed.
+    # Both records come from the same host, so this is a consistency check, not
+    # a signature — but a re-uploaded asset that nobody re-hashed fails it.
+    if [[ -n "$digest" && "$digest" != "$expected" ]]; then
+        warn "DIGEST DISAGREEMENT — $WOTLK_SUMS and the releases API report different hashes"
+        warn "  $WOTLK_SUMS: $expected"
+        warn "  releases API:  $digest"
+        return 1
+    fi
+
+    local actual
+    actual="$(sha256sum "$file" | awk '{print $1}')"
+
+    if [[ "$actual" == "$expected" ]]; then
+        ok "checksum verified (sha256, from $WOTLK_SUMS)"
+        return 0
+    fi
+
+    warn "CHECKSUM MISMATCH — the download does not match $WOTLK_SUMS"
+    warn "  expected: $expected"
+    warn "  got:      $actual"
+    return 1
+}
+
+# StartupWMClass matches what the app's own AppDir .desktop declares
+# (WowWotlk.Gui — Avalonia takes it from the assembly name), so the taskbar
+# groups the running window under this launcher instead of showing a duplicate.
+# No MimeType/%u here, unlike LoreRim: this app registers no URL scheme, and a
+# %u on an Exec that ignores it is just noise desktop-file-validate tolerates.
+write_wotlk_desktop() {
+    cat > "$APPS_DIR/com.wowwotlk.autoinstall.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=WotLK Autoinstall
+Comment=One-click WoW 3.3.5a client installer for Linux
+Exec=$WOTLK_APPIMAGE
+Icon=$WOTLK_DIR/icon.png
+Terminal=false
+Categories=Game;Utility;
+StartupNotify=true
+StartupWMClass=WowWotlk.Gui
+EOF
+}
+
+# ── 12. system config ─────────────────────────────────────────────────────────
 configure_system() {
     step "System config"
 
@@ -2444,6 +2638,7 @@ main() {
     wanted dreadkeep    && install_dreadkeep
     wanted gammagui     && install_gammagui
     wanted lorerim      && install_lorerim
+    wanted wotlk        && install_wotlk
     wanted config       && configure_system
 
     if [[ $DRY_RUN -eq 1 ]]; then
@@ -2485,6 +2680,7 @@ main() {
     printf '    %sCastleOfTheDreadkeep.AppImage%s  procedural castle crawler (FPS)\n' "$BOLD" "$RESET"
     printf '    %sStalkerGammaGui.AppImage%s  install, update and play S.T.A.L.K.E.R. GAMMA\n' "$BOLD" "$RESET"
     printf '    %sLorerimAutoinstall.AppImage%s  one-click LoreRim (Wabbajack) install\n' "$BOLD" "$RESET"
+    printf '    %sWowWotlkAutoinstall.AppImage%s  one-click WoW 3.3.5a client install\n' "$BOLD" "$RESET"
     printf '    %s(or find everything in the app menu)%s\n\n' "$DIM" "$RESET"
 }
 
