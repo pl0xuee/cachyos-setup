@@ -2,3 +2,7 @@
 *.log
 *.bak
 *.partial
+
+# Scratch that must never be committed.
+.claude/
+.superpowers/
