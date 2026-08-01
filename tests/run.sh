@@ -1523,6 +1523,34 @@ kderice_have_slides "$kd/build/wallpapers" 1 png \
     && fail "the contact sheet is not counted as a slide" "mindepth is letting preview.png count" \
     || pass "the contact sheet is not counted as a slide"
 
+# check_geometry.py returns 0 on empty stdin — correct for a status command,
+# wrong for a gate. No geometry means we don't know, and not knowing must not
+# apply a rice pinned to three specific monitors.
+kderice_geometry_ok "$kd" "$kd/build/wallpapers" "" >/dev/null 2>&1 \
+    && fail "no kscreen output fails the geometry gate" "an unknown layout would be riced" \
+    || pass "no kscreen output fails the geometry gate"
+
+kderice_geometry_ok "$kd" "$kd/build/wallpapers" "   " >/dev/null 2>&1 \
+    && fail "whitespace-only kscreen output fails the gate" \
+    || pass "whitespace-only kscreen output fails the gate"
+
+# The gate must consult kderice's own checker, not a reimplementation of it that
+# would drift the moment palette.toml grows a field.
+if awk '/^kderice_geometry_ok\(\)/,/^}/' "$SCRIPT" | grep -q 'check_geometry.py'; then
+    pass "the gate calls kderice's own check_geometry.py"
+else
+    fail "the gate calls kderice's own check_geometry.py" "don't reimplement it in bash"
+fi
+
+# It must be pointed at build/wallpapers, not the installed directory: the gate
+# runs BEFORE apply, and apply is what populates ~/.local/share/wallpapers.
+if awk '/install_kderice\(\)/,/^}/' "$SCRIPT" | grep -q 'kderice_geometry_ok .*build/wallpapers'; then
+    pass "the gate checks build/wallpapers, not the installed dir"
+else
+    fail "the gate checks build/wallpapers, not the installed dir" \
+         "the installed dir is empty until apply runs, so the gate would always fail"
+fi
+
 # ── summary ───────────────────────────────────────────────────────────────────
 printf '\n%s%d passed, %d failed%s\n' "$BOLD" "$PASS" "$FAIL" "$RESET"
 [[ $FAIL -eq 0 ]]

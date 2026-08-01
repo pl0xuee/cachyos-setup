@@ -2658,6 +2658,28 @@ kderice_have_slides() {
     [[ "$have" -ge "$want" ]]
 }
 
+# Does this machine look like the one palette.toml was written for?
+#
+# palette.toml pins three monitors by name, resolution, scale AND the Plasma
+# containment id each one owns. Applying against a different layout points the
+# slideshow at containments that don't exist — the desktop looks fine and the
+# wallpaper is simply wrong, which is the failure mode kderice wrote this checker
+# to catch in the first place. So the checker is called, never reimplemented:
+# a bash copy would drift the moment palette.toml grows a field.
+#
+# Pointed at build/wallpapers rather than the checker's default
+# ~/.local/share/wallpapers/gunmetal, because this runs BEFORE apply and apply is
+# what populates that directory.
+#
+# Empty input is a FAILURE here. check_geometry.py returns 0 for it — right for a
+# status command, wrong for a gate: no geometry means we don't know, and not
+# knowing must not rice a machine.
+kderice_geometry_ok() {
+    local proj="$1" walls="$2" json="$3"
+    [[ -n "${json// /}" ]] || return 1
+    printf '%s' "$json" | python3 "$proj/generate/check_geometry.py" "$walls"
+}
+
 # Everything kderice needs from the repos, checked before it can fail deep inside
 # a Python traceback or a `die` in its own preflight.
 #
@@ -2765,6 +2787,15 @@ install_kderice() {
             return 0
         fi
         ok "$want wallpapers generated"
+    fi
+
+    local geom=""
+    have kscreen-doctor && geom="$(kscreen-doctor -j 2>/dev/null || true)"
+    if ! kderice_geometry_ok "$dir" "$dir/build/wallpapers" "$geom"; then
+        warn "this machine's monitors don't match kderice's palette.toml — the rice was built but NOT applied"
+        warn "fix [wallpaper].sizes in $dir/palette.toml, then: (cd $dir && python3 generate/wallpaper.py && ./bin/kderice apply)"
+        report "KDE Rice" "built, NOT applied — monitor layout doesn't match palette.toml"
+        return 0
     fi
 }
 
