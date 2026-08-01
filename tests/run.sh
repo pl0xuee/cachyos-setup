@@ -1512,6 +1512,15 @@ else
     fail "generate/wallpaper.py is run with stdin closed"
 fi
 
+# apply doesn't prompt today (no sudo, no interactive read in do_apply) — but
+# the same DRY_RUN-print collision applies here too, so this is held to the
+# same standard rather than left as the one uncovered invocation in the step.
+if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -Ev '^\s*run "\(cd' | grep -qF 'bin/kderice apply < /dev/null'; then
+    pass "kderice apply is run with stdin closed"
+else
+    fail "kderice apply is run with stdin closed" "only the dry-run print block has it, or it's missing"
+fi
+
 # palette.toml is TOML, which bash cannot read. A hand-rolled parser would break
 # the first time a comment happened to look like a key — and the file is more
 # comment than key.
@@ -1565,6 +1574,14 @@ kderice_have_slides "$kd/build/wallpapers" 1 png 999x999 \
          "counted preview.png instead of failing on the missing 999x999 directory" \
     || pass "the contact sheet is not counted as a slide"
 
+# check_geometry.py has no generate/ under $kd, so python3 exits 2 for "no such
+# file" on EVERY call below regardless of whether the guard being tested is
+# even present — `&& fail || pass` would then report pass either way. This stub
+# stands in for the real checker (always "matches") so these assertions are
+# actually exercising kderice_geometry_ok's own guard, not a missing file.
+mkdir -p "$kd/generate"
+printf 'import sys; sys.exit(0)\n' > "$kd/generate/check_geometry.py"
+
 # check_geometry.py returns 0 on empty stdin — correct for a status command,
 # wrong for a gate. No geometry means we don't know, and not knowing must not
 # apply a rice pinned to three specific monitors.
@@ -1575,6 +1592,23 @@ kderice_geometry_ok "$kd" "$kd/build/wallpapers" "" >/dev/null 2>&1 \
 kderice_geometry_ok "$kd" "$kd/build/wallpapers" "   " >/dev/null 2>&1 \
     && fail "whitespace-only kscreen output fails the gate" \
     || pass "whitespace-only kscreen output fails the gate"
+
+# Spaces aren't the only whitespace Python's own .strip() reduces to empty — a
+# tab or a bare newline gets there too, and a guard written as ${json// /}
+# (spaces only) would miss both.
+kderice_geometry_ok "$kd" "$kd/build/wallpapers" "$(printf '\t\n')" >/dev/null 2>&1 \
+    && fail "tab/newline-only kscreen output fails the gate" \
+         "a space-only guard would have let this through" \
+    || pass "tab/newline-only kscreen output fails the gate"
+
+# check_geometry.py's OTHER "I could not tell" case: non-empty stdin that still
+# isn't valid JSON — a backend diagnostic or a truncated dump ahead of the real
+# output, say. The checker answers 0 for this too, so the gate has to catch it
+# before ever trusting the checker's verdict.
+kderice_geometry_ok "$kd" "$kd/build/wallpapers" "not json at all" >/dev/null 2>&1 \
+    && fail "unparseable kscreen output fails the geometry gate" \
+         "check_geometry.py answers 0 for text it can't parse — the gate must not trust that" \
+    || pass "unparseable kscreen output fails the geometry gate"
 
 # The gate must consult kderice's own checker, not a reimplementation of it that
 # would drift the moment palette.toml grows a field.
@@ -1593,13 +1627,34 @@ else
          "the installed dir is empty until apply runs, so the gate would always fail"
 fi
 
+# kderice_geometry_ok's own guard is unit-tested above, but the call site feeds
+# it — kscreen-doctor's own exit status has to reach that guard as a failure, or
+# a FAILING kscreen-doctor that still printed something non-JSON (never
+# checked) looks identical to a successful one. `2>/dev/null || true` (the
+# original call site) discards it outright.
+if awk '/install_kderice\(\)/,/^}/' "$SCRIPT" | grep -qF '$geom_rc -ne 0'; then
+    pass "kscreen-doctor's exit status reaches the gate"
+else
+    fail "kscreen-doctor's exit status reaches the gate" \
+         "a failing kscreen-doctor with non-empty, non-JSON stdout would look successful"
+fi
+
+# setup, the gate, and apply, in that order. Matched on the REAL invocations'
+# exact text, not a loose substring: the DRY_RUN branch prints its own copy of
+# all three ('run "(cd ...'), and the gate's own advice to the user also
+# contains the words "bin/kderice apply" ('(cd $dir && ... && ./bin/kderice
+# apply)', no space after the opening paren, no `< /dev/null`) — either
+# collision would let a DELETED real call still appear to run in order.
+kd_body="$(awk '/^install_kderice\(\)/,/^}/' "$SCRIPT")"
+kd_real="$(grep -Ev '^\s*run "\(cd' <<<"$kd_body")"
+kd_setup="$(grep -nF '( cd "$dir" && ./bin/kderice setup < /dev/null )' <<<"$kd_real" | tail -1 | cut -d: -f1)"
+kd_gate="$(grep -n 'kderice_geometry_ok' <<<"$kd_real" | tail -1 | cut -d: -f1)"
+kd_apply="$(grep -nF '( cd "$dir" && ./bin/kderice apply < /dev/null )' <<<"$kd_real" | tail -1 | cut -d: -f1)"
+
 # setup runs whether or not the gate passed. A machine the rice can't be applied
 # to still gets the KDE Rice launcher, so it can be applied by hand once
 # palette.toml is fixed — that's the whole point of gating apply rather than the
 # step.
-kd_body="$(awk '/^install_kderice\(\)/,/^}/' "$SCRIPT")"
-kd_setup="$(grep -n 'bin/kderice setup' <<<"$kd_body" | tail -1 | cut -d: -f1)"
-kd_gate="$(grep -n 'kderice_geometry_ok' <<<"$kd_body" | tail -1 | cut -d: -f1)"
 if [[ -n "$kd_setup" && -n "$kd_gate" && "$kd_setup" -lt "$kd_gate" ]]; then
     pass "kderice setup runs before the apply gate is consulted"
 else
@@ -1607,19 +1662,41 @@ else
          "setup=$kd_setup gate=$kd_gate — a mismatched machine would get no launcher"
 fi
 
-# Whatever happens, the run must say so in the closing report.
-if grep -qE 'report "KDE Rice"' <<<"$kd_body"; then
-    pass "the step reports its outcome"
+# And apply must never run ahead of the gate that's supposed to reject it.
+if [[ -n "$kd_gate" && -n "$kd_apply" && "$kd_gate" -lt "$kd_apply" ]]; then
+    pass "kderice apply runs after the geometry gate is consulted"
 else
-    fail "the step reports its outcome"
+    fail "kderice apply runs after the geometry gate is consulted" \
+         "gate=$kd_gate apply=$kd_apply — apply could run before a mismatched machine is rejected"
 fi
 
-# A rice that didn't apply is the one outcome a user would otherwise not notice —
-# their desktop just looks the same. It has to warn, not only report.
-if grep -q "don't match" <<<"$kd_body" || grep -q 'NOT applied' <<<"$kd_body"; then
-    pass "a gated rice is warned about, not applied silently"
+# The next two used to grep the WHOLE function body, which Tasks 3-5 already
+# satisfy on their own — every early SKIPPED path reports, and the gate's own
+# rejection already warns "NOT applied" — so reverting all of Task 6 left both
+# green. Restricted to the region that runs only once the gate's own if/fi has
+# closed (i.e. the gate PASSED), so they can only go green because of the apply
+# block Task 6 added.
+kd_post_gate="$(awk '
+    /kderice_geometry_ok/ { ingate = 1; next }
+    ingate && /^[[:space:]]*fi[[:space:]]*$/ { ingate = 0; post = 1; next }
+    post { print }
+' <<<"$kd_body")"
+
+# Whatever happens once the gate has passed, the run must say so in the closing
+# report.
+if grep -qE 'report "KDE Rice"' <<<"$kd_post_gate"; then
+    pass "the step reports its outcome"
 else
-    fail "a gated rice is warned about, not applied silently"
+    fail "the step reports its outcome" "no report call runs once the gate has passed"
+fi
+
+# A failed apply is the one outcome a user would otherwise not notice — the
+# desktop is simply unchanged, the same reasoning behind the gate's own
+# rejection warning above. This is apply's own version of it.
+if grep -q 'warn ' <<<"$kd_post_gate"; then
+    pass "a failed apply is warned about, not reported silently"
+else
+    fail "a failed apply is warned about, not reported silently"
 fi
 
 # ── summary ───────────────────────────────────────────────────────────────────

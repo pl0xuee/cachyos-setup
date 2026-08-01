@@ -11,7 +11,7 @@ Safe to re-run — a second run is a no-op.
 ```bash
 ./install.sh --dry-run          # show what it would do, change nothing
 ./install.sh --only config      # just the KDE/Brave config
-./tests/run.sh                  # 213 tests, no VM needed
+./tests/run.sh                  # 247 tests, no VM needed
 ```
 
 **Log into KDE before running it.** Plasma doesn't write its panel config until
@@ -37,4 +37,4 @@ applied, and the run says so.
 | `packages/taskbar.txt` | pinned launchers, in order |
 | `packages/brave-extensions.txt` | extensions to auto-install |
 | `install.sh` | panel height, tray, homepage, power profile — as variables at the top |
-| the KDE rice | cloned to `~/Documents/Projects/kderice`, built and applied at the end |
+| `~/Documents/Projects/kderice` | the KDE rice — cloned, built and applied at the end |

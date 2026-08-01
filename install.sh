@@ -2682,12 +2682,19 @@ kderice_have_slides() {
 # ~/.local/share/wallpapers/gunmetal, because this runs BEFORE apply and apply is
 # what populates that directory.
 #
-# Empty input is a FAILURE here. check_geometry.py returns 0 for it — right for a
-# status command, wrong for a gate: no geometry means we don't know, and not
-# knowing must not rice a machine.
+# check_geometry.py answers 0 — "matches" — for BOTH empty stdin AND stdin that
+# fails to parse as JSON: right for a status command ("I could not tell"), wrong
+# for a gate, where not knowing must not rice a machine. Neither case is left to
+# the checker, so both are caught here first:
+#   - whitespace-only input (spaces, tabs OR newlines — anything Python's own
+#     .strip() would reduce to empty) is rejected outright;
+#   - anything else has to parse as JSON before the checker's verdict is
+#     trusted, since a backend diagnostic or a truncated dump on stdout is
+#     non-empty but tells us nothing about the monitors either.
 kderice_geometry_ok() {
     local proj="$1" walls="$2" json="$3"
-    [[ -n "${json// /}" ]] || return 1
+    [[ -n "${json//[[:space:]]/}" ]] || return 1
+    printf '%s' "$json" | python3 -c 'import json, sys; json.load(sys.stdin)' 2>/dev/null || return 1
     printf '%s' "$json" | python3 "$proj/generate/check_geometry.py" "$walls"
 }
 
@@ -2834,9 +2841,19 @@ install_kderice() {
 
     local commit; commit="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
-    local geom=""
-    have kscreen-doctor && geom="$(kscreen-doctor -j 2>/dev/null || true)"
-    if ! kderice_geometry_ok "$dir" "$dir/build/wallpapers" "$geom"; then
+    # kscreen-doctor's own exit status has to survive to the gate, not just its
+    # stdout: a bare `|| true` here would make a FAILING kscreen-doctor that
+    # still printed something (a backend diagnostic, a partial dump — none of it
+    # JSON) indistinguishable from a successful one, and that something is
+    # exactly the "we don't know" input the gate exists to reject. Written as
+    # the test of an `if` so a `have` or `kscreen-doctor` failure can't trip
+    # errexit either way — set -e forgives every command in a && list that's
+    # part of an `if`'s test, not just the ones before the final `&&`.
+    local geom="" geom_rc=1
+    if have kscreen-doctor && geom="$(kscreen-doctor -j 2>/dev/null)"; then
+        geom_rc=0
+    fi
+    if [[ $geom_rc -ne 0 ]] || ! kderice_geometry_ok "$dir" "$dir/build/wallpapers" "$geom"; then
         warn "this machine's monitors don't match kderice's palette.toml — the rice was built and the launcher installed, but NOT applied"
         warn "fix [wallpaper].sizes in $dir/palette.toml, then: (cd $dir && python3 generate/wallpaper.py && ./bin/kderice apply)"
         report "KDE Rice" "built ($commit), NOT applied — monitor layout doesn't match palette.toml"
@@ -2845,8 +2862,11 @@ install_kderice() {
 
     # apply stops and restarts plasmashell itself, through the systemd user unit.
     # Safe here because configure_taskbar has already finished with the panel.
+    # Stdin closed for the same reason as setup: do_apply prompts for nothing
+    # today (no sudo, no interactive read), but holding the invariant here too
+    # means a future kderice that does prompt still can't hang an unattended run.
     info "Applying — plasmashell restarts, so the desktop will flicker..."
-    if ( cd "$dir" && ./bin/kderice apply ); then
+    if ( cd "$dir" && ./bin/kderice apply < /dev/null ); then
         ok "Gunmetal Filament applied"
         report "KDE Rice" "applied ($commit) — 'kderice restore' puts stock Breeze back"
     else
