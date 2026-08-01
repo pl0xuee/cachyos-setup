@@ -445,10 +445,13 @@ kderice_have_slides "$kd/build/wallpapers" 8 webp \
     && pass "complete wallpapers are reused" \
     || fail "complete wallpapers are reused" "would regenerate 590 MB on every re-run"
 
-# A stray PNG contact sheet must not be mistaken for a slide.
+# A stray PNG contact sheet must not be mistaken for a slide. Asking for ONE png
+# is what makes this discriminate: preview.png sits at depth 1, so a mindepth of
+# 1 would find it, count 1, and wrongly report the set complete. Asking for 8
+# would pass either way and prove nothing.
 : > "$kd/build/wallpapers/preview.png"
-kderice_have_slides "$kd/build/wallpapers" 8 png \
-    && fail "the contact sheet is not counted as a slide" \
+kderice_have_slides "$kd/build/wallpapers" 1 png \
+    && fail "the contact sheet is not counted as a slide" "mindepth is letting preview.png count" \
     || pass "the contact sheet is not counted as a slide"
 ```
 
