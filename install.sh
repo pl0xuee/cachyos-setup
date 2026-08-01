@@ -2630,8 +2630,9 @@ ensure_path() {
     return 0
 }
 
-# How many wallpaper slides palette.toml says there should be, and in what
-# format. Printed as "<count> <format>".
+# How many wallpaper slides palette.toml says there should be per resolution, in
+# what format, and at which resolutions. Printed as "<variants> <format> <res>...",
+# e.g. "51 webp 3440x1440 3840x2160 1440x2560".
 #
 # Via Python's tomllib rather than grep: palette.toml is mostly prose comments,
 # and several of them are written as commented-out keys — the exact shape a
@@ -2641,21 +2642,31 @@ kderice_expected_slides() {
 import sys, tomllib
 with open(sys.argv[1], "rb") as fh:
     w = tomllib.load(fh)["wallpaper"]
-print(w["variants"] * len(w["sizes"]), w.get("format", "png"))
+sizes = [f"{s['w']}x{s['h']}" for s in w["sizes"]]
+print(w["variants"], w.get("format", "png"), *sizes)
 PY
 }
 
 # Are the slides already generated? Generating them costs ~90s and ~590 MB, and
 # re-running install.sh is supposed to be a no-op.
 #
-# mindepth 2 because each slide lives in a subdirectory named for its resolution;
-# the -name filter because build/wallpapers also holds preview.png, the contact
-# sheet, which is not a slide.
+# Checked per resolution against $dir/<res>/, not as one global total against
+# variants x len(sizes) — that global count was wrong twice over. Two identical
+# monitors share a single WxH directory, so the total never reaches
+# variants x len(sizes) and the step would regenerate ~590 MB on EVERY run. And
+# a resolution a palette edit renamed or dropped could leave stale slides from
+# the old palette still large enough to satisfy the total, so a real change
+# would silently not take. Checking each resolution's own directory (even the
+# same directory twice, for duplicate monitors) can't be fooled either way.
 kderice_have_slides() {
-    local dir="$1" want="$2" fmt="$3" have
-    [[ -d "$dir" ]] || return 1
-    have="$(find "$dir" -mindepth 2 -type f -name "*.$fmt" 2>/dev/null | wc -l)"
-    [[ "$have" -ge "$want" ]]
+    local dir="$1" variants="$2" fmt="$3" res have
+    shift 3
+    for res in "$@"; do
+        [[ -d "$dir/$res" ]] || return 1
+        have="$(find "$dir/$res" -maxdepth 1 -type f -name "*.$fmt" 2>/dev/null | wc -l)"
+        [[ "$have" -ge "$variants" ]] || return 1
+    done
+    return 0
 }
 
 # Does this machine look like the one palette.toml was written for?
@@ -2731,7 +2742,16 @@ install_kderice() {
     kderice_deps || { report "KDE Rice" "SKIPPED (missing dependencies)"; return 0; }
 
     local dir="$KDERICE_DIR"
-    run mkdir -p "$PROJECTS_DIR"
+    # A bare statement, not the last command of an && list — but set -e does not
+    # forgive an unguarded failure ANYWHERE, only the ones inside a conditional.
+    # An unwritable $PROJECTS_DIR (or a plain file already sitting at that path)
+    # would otherwise abort the whole run here, after configure_system has
+    # already finished, with no summary and no warning.
+    run mkdir -p "$PROJECTS_DIR" || {
+        warn "couldn't create $PROJECTS_DIR — skipping the rice"
+        report "KDE Rice" "SKIPPED (couldn't create $PROJECTS_DIR)"
+        return 0
+    }
 
     if [[ -d "$dir/.git" ]]; then
         info "Clone exists — pulling latest..."
@@ -2763,30 +2783,35 @@ install_kderice() {
     info "Building the palette..."
     # build.py asserts WCAG contrast, so a bad colour edit fails here rather than
     # on screen. It's fast — no reason to ever skip it.
-    if ! ( cd "$dir" && python3 generate/build.py ); then
+    if ! ( cd "$dir" && python3 generate/build.py < /dev/null ); then
         warn "kderice build failed — skipping the rice"
         report "KDE Rice" "SKIPPED (build failed)"
         return 0
     fi
 
-    local want fmt
-    read -r want fmt <<<"$(kderice_expected_slides "$dir/palette.toml")"
+    local want fmt rest
+    read -r want fmt rest <<<"$(kderice_expected_slides "$dir/palette.toml")"
     if [[ -z "$want" ]]; then
         warn "couldn't read [wallpaper] out of $dir/palette.toml — skipping the rice"
         report "KDE Rice" "SKIPPED (unreadable palette.toml)"
         return 0
     fi
 
-    if kderice_have_slides "$dir/build/wallpapers" "$want" "$fmt"; then
-        skip "wallpapers already generated ($want slides)"
+    # $rest is a bare, space-separated list of WxH tokens — never containing a
+    # space or a glob character — so the unquoted expansions below are a
+    # deliberate word-split: each token becomes its own positional argument to
+    # kderice_have_slides, one per resolution.
+    local -a sizes=($rest)
+    if kderice_have_slides "$dir/build/wallpapers" "$want" "$fmt" "${sizes[@]}"; then
+        skip "wallpapers already generated ($want per resolution: ${sizes[*]})"
     else
-        info "Generating $want wallpapers — takes about 90s and ~590 MB..."
-        if ! ( cd "$dir" && python3 generate/wallpaper.py ); then
+        info "Generating $want wallpapers per resolution (${sizes[*]}) — takes about 90s and ~590 MB..."
+        if ! ( cd "$dir" && python3 generate/wallpaper.py < /dev/null ); then
             warn "wallpaper generation failed — skipping the rice"
             report "KDE Rice" "SKIPPED (wallpaper generation failed)"
             return 0
         fi
-        ok "$want wallpapers generated"
+        ok "wallpapers generated ($want per resolution: ${sizes[*]})"
     fi
 
     # Links kderice and kderice-launch into ~/.local/bin and installs the
@@ -2828,6 +2853,7 @@ install_kderice() {
         warn "kderice apply failed — the desktop is unchanged; run 'kderice status' to see why"
         report "KDE Rice" "built ($commit), apply FAILED — try 'kderice status'"
     fi
+    return 0
 }
 
 # ── run ───────────────────────────────────────────────────────────────────────

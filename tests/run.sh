@@ -1459,8 +1459,8 @@ fi
 
 # The step runs after configure_system: configure_taskbar rewrites the panel and
 # restarts plasmashell, and kderice must snapshot the panel this script wrote.
-kd_line="$(grep -n 'wanted kderice' "$SCRIPT" | cut -d: -f1)"
-cfg_line="$(grep -n 'wanted config' "$SCRIPT" | cut -d: -f1)"
+kd_line="$(grep -n -m1 'wanted kderice' "$SCRIPT" | cut -d: -f1)"
+cfg_line="$(grep -n -m1 'wanted config' "$SCRIPT" | cut -d: -f1)"
 if [[ -n "$kd_line" && -n "$cfg_line" && "$kd_line" -gt "$cfg_line" ]]; then
     pass "kderice runs after the config step"
 else
@@ -1475,12 +1475,41 @@ else
     pass "kderice never calls die"
 fi
 
+# `run mkdir -p "$PROJECTS_DIR"` is a bare statement, not the last command of an
+# && list — but set -e does not forgive an unguarded failure anywhere else
+# either. An unwritable $PROJECTS_DIR (or a plain file sitting at that path)
+# must not take the whole run down after configure_system has already finished.
+if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -qF 'run mkdir -p "$PROJECTS_DIR" || {'; then
+    pass "a failed mkdir doesn't abort the run"
+else
+    fail "a failed mkdir doesn't abort the run" \
+         "run mkdir -p \"\$PROJECTS_DIR\" must be guarded; set -e kills the run otherwise"
+fi
+
 # kderice setup can sudo for the font when it's absent, and require_tty would
 # then stop and wait. Stdin closed means it can never block an unattended run.
-if grep -qF 'bin/kderice setup < /dev/null' "$SCRIPT"; then
+#
+# Excludes lines that start with `run "(cd` — the DRY_RUN print block's copy of
+# this same text — so this only goes green off the REAL invocation. Grepping the
+# whole function (as before) was a permanent false green: dropping `< /dev/null`
+# from the real call left the print string to satisfy it anyway.
+if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -Ev '^\s*run "\(cd' | grep -qF 'bin/kderice setup < /dev/null'; then
     pass "kderice setup is run with stdin closed"
 else
-    fail "kderice setup is run with stdin closed"
+    fail "kderice setup is run with stdin closed" "only the dry-run print block has it, or it's missing"
+fi
+
+# Same hazard, same fix, for the two Python steps that precede setup: neither
+# guards its own stdin, and generate/wallpaper.py runs for ~90s.
+if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -qF 'python3 generate/build.py < /dev/null'; then
+    pass "generate/build.py is run with stdin closed"
+else
+    fail "generate/build.py is run with stdin closed"
+fi
+if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -qF 'python3 generate/wallpaper.py < /dev/null'; then
+    pass "generate/wallpaper.py is run with stdin closed"
+else
+    fail "generate/wallpaper.py is run with stdin closed"
 fi
 
 # palette.toml is TOML, which bash cannot read. A hand-rolled parser would break
@@ -1497,13 +1526,13 @@ sizes = [
   { w = 300, h = 400, scale = 1.0, containment = 44, output = "DP-2" },
 ]
 EOF
-check_eq "expected slide count is variants x outputs" "8 webp" \
+check_eq "expected slides are variants, format and per-resolution list" "4 webp 100x200 300x400" \
     "$(kderice_expected_slides "$kd/palette.toml")"
 
-# Slides live one directory down, named for their resolution. Counting at depth 1
-# would count nothing; counting every file would count the contact sheet too.
+# Slides live one directory down, named for their resolution. Empty resolution
+# directories must not be mistaken for a complete set.
 mkdir -p "$kd/build/wallpapers/100x200" "$kd/build/wallpapers/300x400"
-kderice_have_slides "$kd/build/wallpapers" 8 webp \
+kderice_have_slides "$kd/build/wallpapers" 4 webp 100x200 300x400 \
     && fail "incomplete wallpapers are regenerated" "empty dirs counted as complete" \
     || pass "incomplete wallpapers are regenerated"
 
@@ -1511,17 +1540,29 @@ for i in 1 2 3 4; do
     : > "$kd/build/wallpapers/100x200/gunmetal-$i-100x200.webp"
     : > "$kd/build/wallpapers/300x400/gunmetal-$i-300x400.webp"
 done
-kderice_have_slides "$kd/build/wallpapers" 8 webp \
+kderice_have_slides "$kd/build/wallpapers" 4 webp 100x200 300x400 \
     && pass "complete wallpapers are reused" \
     || fail "complete wallpapers are reused" "would regenerate 590 MB on every re-run"
 
-# A stray PNG contact sheet must not be mistaken for a slide. Asking for ONE png
-# is what makes this discriminate: preview.png sits at depth 1, so a mindepth of
-# 1 would find it, count 1, and wrongly report the set complete. Asking for 8
-# would pass either way and prove nothing.
+# Two identical monitors share ONE WxH directory. The old global-total check
+# (variants x len(sizes)) demanded twice as many files as that directory would
+# ever hold, so the step regenerated ~590 MB on every single run. Checking each
+# entry against its own directory — even the same directory twice — asks the
+# same question twice instead of doubling it.
+kderice_have_slides "$kd/build/wallpapers" 4 webp 100x200 100x200 \
+    && pass "a duplicate resolution doesn't force regeneration" \
+    || fail "a duplicate resolution doesn't force regeneration" \
+         "two identical monitors share one directory; the count must not need double the files"
+
+# A stray PNG contact sheet at the top of build/wallpapers must not be mistaken
+# for a slide inside some resolution's own directory. Asking for a resolution
+# that has no directory yet is what makes this discriminate: a check that
+# (wrongly) searched $dir instead of $dir/$res would find preview.png sitting
+# right there and call the nonexistent 999x999 resolution done anyway.
 : > "$kd/build/wallpapers/preview.png"
-kderice_have_slides "$kd/build/wallpapers" 1 png \
-    && fail "the contact sheet is not counted as a slide" "mindepth is letting preview.png count" \
+kderice_have_slides "$kd/build/wallpapers" 1 png 999x999 \
+    && fail "the contact sheet is not counted as a slide" \
+         "counted preview.png instead of failing on the missing 999x999 directory" \
     || pass "the contact sheet is not counted as a slide"
 
 # check_geometry.py returns 0 on empty stdin — correct for a status command,
