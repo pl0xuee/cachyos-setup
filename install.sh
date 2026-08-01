@@ -2630,44 +2630,26 @@ ensure_path() {
     return 0
 }
 
-# How many wallpaper slides palette.toml says there should be per resolution, in
-# what format, and at which resolutions. Printed as "<variants> <format> <res>...",
-# e.g. "51 webp 3440x1440 3840x2160 1440x2560".
+# There is deliberately no "are the wallpapers already generated?" cache here.
 #
-# Via Python's tomllib rather than grep: palette.toml is mostly prose comments,
-# and several of them are written as commented-out keys — the exact shape a
-# line-based parser would read as real. Nothing in bash reads TOML correctly.
-kderice_expected_slides() {
-    python3 - "$1" <<'PY' 2>/dev/null
-import sys, tomllib
-with open(sys.argv[1], "rb") as fh:
-    w = tomllib.load(fh)["wallpaper"]
-sizes = [f"{s['w']}x{s['h']}" for s in w["sizes"]]
-print(w["variants"], w.get("format", "png"), *sizes)
-PY
-}
-
-# Are the slides already generated? Generating them costs ~90s and ~590 MB, and
-# re-running install.sh is supposed to be a no-op.
+# There used to be: kderice rendered 51 terrain variants at every resolution —
+# 153 files, ~590 MB, ~90 seconds — so re-running install.sh had to be able to
+# skip it. That cache read [wallpaper].variants out of palette.toml and counted
+# files in per-resolution directories.
 #
-# Checked per resolution against $dir/<res>/, not as one global total against
-# variants x len(sizes) — that global count was wrong twice over. Two identical
-# monitors share a single WxH directory, so the total never reaches
-# variants x len(sizes) and the step would regenerate ~590 MB on EVERY run. And
-# a resolution a palette edit renamed or dropped could leave stale slides from
-# the old palette still large enough to satisfy the total, so a real change
-# would silently not take. Checking each resolution's own directory (even the
-# same directory twice, for duplicate monitors) can't be fooled either way.
-kderice_have_slides() {
-    local dir="$1" variants="$2" fmt="$3" res have
-    shift 3
-    for res in "$@"; do
-        [[ -d "$dir/$res" ]] || return 1
-        have="$(find "$dir/$res" -maxdepth 1 -type f -name "*.$fmt" 2>/dev/null | wc -l)"
-        [[ "$have" -ge "$variants" ]] || return 1
-    done
-    return 0
-}
+# kderice 0.2.0 renders ONE wallpaper per monitor, measured from the live
+# session: 3 files, ~12 MB, ~9 seconds. Both halves of the cache stopped being
+# right at once. `variants` no longer exists, so the parse raised KeyError into
+# /dev/null and the step reported "couldn't read [wallpaper] out of
+# palette.toml — skipping the rice"; and the per-resolution directories it
+# counted are gone.
+#
+# It is not re-implemented against the new layout because at ~9 seconds the
+# cache costs more than it saves, and because caching is now actively WRONG:
+# kderice picks its resolutions up from kscreen at generate time, so plugging in
+# a different monitor SHOULD re-render. A cache keyed on files already present
+# is exactly what would stop that. Regenerating unconditionally is both simpler
+# and the only version that keeps working when the hardware changes.
 
 # Does this machine look like the one palette.toml was written for?
 #
@@ -2732,11 +2714,15 @@ kderice_deps() {
 # A reversible Plasma 6 rice, generated from a palette file rather than shipped
 # as a theme. Two things make it unlike every step above.
 #
-# It is machine-specific by construction: palette.toml declares three monitors by
-# name, resolution, scale AND Plasma containment id (43/44/45 — ids Plasma
-# assigned on one particular box). On any other layout the slideshow would be
-# pointed at containments that don't exist. So applying is gated on kderice's own
-# check_geometry.py, and a machine that doesn't match still gets the launcher.
+# It is partly machine-specific by construction. Since kderice 0.2.0 the monitor
+# geometry is measured from kscreen, so resolutions and output names port freely
+# — but palette.toml still pins the Plasma containment id each desktop owns
+# (43/44/45, ids Plasma assigned on one particular box), and those are NOT
+# discoverable from kscreen. On a box whose desktop containments are numbered
+# differently the wallpaper keys are written to containments that don't exist:
+# colours and panel land, wallpapers silently don't. So applying is gated on
+# kderice's own check_geometry.py, and a machine that doesn't match still gets
+# the launcher.
 #
 # And it runs LAST, after configure_system. configure_taskbar rewrites the
 # panel's applet list and restarts plasmashell; kderice's README names re-applying
@@ -2780,9 +2766,9 @@ install_kderice() {
     # isn't one — `run git clone` only printed what it would have done.
     if [[ $DRY_RUN -eq 1 ]]; then
         run "(cd $dir && python3 generate/build.py)"
-        run "(cd $dir && python3 generate/wallpaper.py)  # only when slides are missing"
+        run "(cd $dir && python3 generate/wallpaper.py)  # one per connected monitor"
         run "(cd $dir && ./bin/kderice setup < /dev/null)"
-        run "(cd $dir && ./bin/kderice apply)            # only when the monitors match palette.toml"
+        run "(cd $dir && ./bin/kderice apply)            # only when check_geometry.py passes"
         report "KDE Rice" "would clone, build and apply"
         return 0
     fi
@@ -2796,30 +2782,17 @@ install_kderice() {
         return 0
     fi
 
-    local want fmt rest
-    read -r want fmt rest <<<"$(kderice_expected_slides "$dir/palette.toml")"
-    if [[ -z "$want" ]]; then
-        warn "couldn't read [wallpaper] out of $dir/palette.toml — skipping the rice"
-        report "KDE Rice" "SKIPPED (unreadable palette.toml)"
+    # One wallpaper per connected monitor, at that monitor's own resolution, which
+    # kderice reads from kscreen itself — so nothing here has to know or declare
+    # what this machine's screens are. See the note above kderice_geometry_ok for
+    # why there is no skip-if-present cache.
+    info "Generating one wallpaper per monitor — about 9s and ~12 MB..."
+    if ! ( cd "$dir" && python3 generate/wallpaper.py < /dev/null ); then
+        warn "wallpaper generation failed — skipping the rice"
+        report "KDE Rice" "SKIPPED (wallpaper generation failed)"
         return 0
     fi
-
-    # $rest is a bare, space-separated list of WxH tokens — never containing a
-    # space or a glob character — so the unquoted expansions below are a
-    # deliberate word-split: each token becomes its own positional argument to
-    # kderice_have_slides, one per resolution.
-    local -a sizes=($rest)
-    if kderice_have_slides "$dir/build/wallpapers" "$want" "$fmt" "${sizes[@]}"; then
-        skip "wallpapers already generated ($want per resolution: ${sizes[*]})"
-    else
-        info "Generating $want wallpapers per resolution (${sizes[*]}) — takes about 90s and ~590 MB..."
-        if ! ( cd "$dir" && python3 generate/wallpaper.py < /dev/null ); then
-            warn "wallpaper generation failed — skipping the rice"
-            report "KDE Rice" "SKIPPED (wallpaper generation failed)"
-            return 0
-        fi
-        ok "wallpapers generated ($want per resolution: ${sizes[*]})"
-    fi
+    ok "wallpapers generated"
 
     # Links kderice and kderice-launch into ~/.local/bin and installs the
     # KDE Rice launcher entry and icon.

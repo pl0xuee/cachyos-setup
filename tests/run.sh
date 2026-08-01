@@ -1521,58 +1521,47 @@ else
     fail "kderice apply is run with stdin closed" "only the dry-run print block has it, or it's missing"
 fi
 
-# palette.toml is TOML, which bash cannot read. A hand-rolled parser would break
-# the first time a comment happened to look like a key — and the file is more
-# comment than key.
-kd="$tmp/kderice"; mkdir -p "$kd"
-cat > "$kd/palette.toml" <<'EOF'
-[wallpaper]
-# variants = 999   <- a comment shaped exactly like the key
-variants = 4
-format   = "webp"
-sizes = [
-  { w = 100, h = 200, scale = 1.0, containment = 43, output = "DP-1" },
-  { w = 300, h = 400, scale = 1.0, containment = 44, output = "DP-2" },
-]
-EOF
-check_eq "expected slides are variants, format and per-resolution list" "4 webp 100x200 300x400" \
-    "$(kderice_expected_slides "$kd/palette.toml")"
+kd="$tmp/kderice"; mkdir -p "$kd/build/wallpapers"
 
-# Slides live one directory down, named for their resolution. Empty resolution
-# directories must not be mistaken for a complete set.
-mkdir -p "$kd/build/wallpapers/100x200" "$kd/build/wallpapers/300x400"
-kderice_have_slides "$kd/build/wallpapers" 4 webp 100x200 300x400 \
-    && fail "incomplete wallpapers are regenerated" "empty dirs counted as complete" \
-    || pass "incomplete wallpapers are regenerated"
+# This step must not read ANY key out of kderice's palette.toml.
+#
+# It used to read [wallpaper].variants, to decide whether the wallpapers were
+# already generated. kderice 0.2.0 deleted that key — one image per monitor, so
+# there is no variant count — and because the parse was piped to /dev/null the
+# KeyError surfaced only as "couldn't read [wallpaper] out of palette.toml —
+# skipping the rice". A whole step silently disabled by a key rename in another
+# repo.
+#
+# The rule that prevents a repeat is the same one kderice_geometry_ok already
+# follows: ask kderice, never re-implement its file formats here. palette.toml
+# may appear in comments and in advice printed to the user; it must never be
+# parsed.
+if grep -n 'palette\.toml' "$SCRIPT" | grep -vE '^\s*[0-9]+:\s*#' | grep -qE 'tomllib|json\.load|grep |awk |sed |read -r'; then
+    fail "install.sh parses no keys out of kderice's palette.toml" \
+         "a parse would break again the next time kderice renames a key"
+else
+    pass "install.sh parses no keys out of kderice's palette.toml"
+fi
 
-for i in 1 2 3 4; do
-    : > "$kd/build/wallpapers/100x200/gunmetal-$i-100x200.webp"
-    : > "$kd/build/wallpapers/300x400/gunmetal-$i-300x400.webp"
-done
-kderice_have_slides "$kd/build/wallpapers" 4 webp 100x200 300x400 \
-    && pass "complete wallpapers are reused" \
-    || fail "complete wallpapers are reused" "would regenerate 590 MB on every re-run"
+# The helpers that did the parsing are gone, not merely unused — a dangling
+# definition invites a future caller.
+if grep -qE 'kderice_(expected_slides|have_slides)' "$SCRIPT"; then
+    fail "the slide-count helpers are gone" "kderice_expected_slides/have_slides still defined or called"
+else
+    pass "the slide-count helpers are gone"
+fi
 
-# Two identical monitors share ONE WxH directory. The old global-total check
-# (variants x len(sizes)) demanded twice as many files as that directory would
-# ever hold, so the step regenerated ~590 MB on every single run. Checking each
-# entry against its own directory — even the same directory twice — asks the
-# same question twice instead of doubling it.
-kderice_have_slides "$kd/build/wallpapers" 4 webp 100x200 100x200 \
-    && pass "a duplicate resolution doesn't force regeneration" \
-    || fail "a duplicate resolution doesn't force regeneration" \
-         "two identical monitors share one directory; the count must not need double the files"
-
-# A stray PNG contact sheet at the top of build/wallpapers must not be mistaken
-# for a slide inside some resolution's own directory. Asking for a resolution
-# that has no directory yet is what makes this discriminate: a check that
-# (wrongly) searched $dir instead of $dir/$res would find preview.png sitting
-# right there and call the nonexistent 999x999 resolution done anyway.
-: > "$kd/build/wallpapers/preview.png"
-kderice_have_slides "$kd/build/wallpapers" 1 png 999x999 \
-    && fail "the contact sheet is not counted as a slide" \
-         "counted preview.png instead of failing on the missing 999x999 directory" \
-    || pass "the contact sheet is not counted as a slide"
+# Wallpaper generation is unconditional. There is no skip-if-present cache, and
+# reinstating one would be a bug rather than an optimisation: kderice reads its
+# resolutions from kscreen at generate time, so a machine that gained, lost or
+# rotated a monitor MUST re-render, and a cache keyed on files already being
+# there is exactly what would stop it. At ~9s it also saves nothing worth having.
+if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" \
+     | grep -Ev '^\s*(#|run "\(cd)' | grep -qiE 'already generated|have_slides'; then
+    fail "wallpaper generation is unconditional" "a skip-if-present cache is back"
+else
+    pass "wallpaper generation is unconditional"
+fi
 
 # check_geometry.py has no generate/ under $kd, so python3 exits 2 for "no such
 # file" on EVERY call below regardless of whether the guard being tested is
