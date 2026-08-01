@@ -129,6 +129,16 @@ WOTLK_REPO="pl0xuee/wow-wotlk-autoinstall"
 WOTLK_ASSET="WowWotlkAutoinstall-x86_64.AppImage"
 WOTLK_SUMS="SHA256SUMS"
 
+# kderice — "Gunmetal Filament", a reversible KDE Plasma 6 rice. Not an app but a
+# set of edits to the desktop's own config, generated from a single palette file.
+#
+# Cloned to a permanent path beside the agenttilecli clone, which is what its own
+# README assumes (it refers to ../agenttilecli, and derives its palette from that
+# app's design system). The clone is also where the rice is re-applied from, so a
+# temp dir would not do.
+KDERICE_REPO="https://github.com/pl0xuee/kderice.git"
+KDERICE_DIR="$PROJECTS_DIR/kderice"
+
 # CPU power profile. power-profiles-daemon forgets this on reboot, so the config
 # step also installs a user service that reapplies it at login.
 POWER_PROFILE="performance"
@@ -184,7 +194,7 @@ else
     BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; RESET=""
 fi
 STEP_N=0
-STEP_TOTAL=13    # preflight + 12 steps; recalculated below if --only is used
+STEP_TOTAL=14    # preflight + 13 steps; recalculated below if --only is used
 
 step() {
     STEP_N=$((STEP_N + 1))
@@ -341,7 +351,7 @@ Options:
   --only STEP     Run one step only:
                     packages | flatpak | agenttilecli | streamhub | consolevault
                     discripper | griddown | dreadkeep | gammagui | lorerim
-                    wotlk | config
+                    wotlk | config | kderice
   --skip-upgrade  Don't run 'pacman -Syu' first (not recommended — see below)
   -h, --help      This message
 
@@ -357,7 +367,8 @@ Notes:
   only if you just upgraded.
 
 Env:
-  PROJECTS_DIR    Where to clone AgentTileCLI (default: ~/Documents/Projects)
+  PROJECTS_DIR    Where to clone AgentTileCLI and kderice
+                  (default: ~/Documents/Projects)
 EOF
 }
 
@@ -367,7 +378,7 @@ while [[ $# -gt 0 ]]; do
         # Guard the arg count first: `shift 2` with only one argument left
         # returns non-zero, and set -e would then exit silently — no usage, no
         # error, nothing. `./install.sh --only` would just print nothing and fail.
-        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | lorerim | wotlk | config)"
+        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | lorerim | wotlk | config | kderice)"
                         ONLY="$2"; shift 2 ;;
         --skip-upgrade) SKIP_UPGRADE=1; shift ;;
         -h|--help)      usage; exit 0 ;;
@@ -377,8 +388,8 @@ done
 
 if [[ -n "$ONLY" ]]; then
     case "$ONLY" in
-        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|griddown|dreadkeep|gammagui|lorerim|wotlk|config) ;;
-        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | lorerim | wotlk | config" ;;
+        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|griddown|dreadkeep|gammagui|lorerim|wotlk|config|kderice) ;;
+        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | lorerim | wotlk | config | kderice" ;;
     esac
 fi
 wanted() { [[ -z "$ONLY" || "$ONLY" == "$1" ]]; }
@@ -2619,6 +2630,26 @@ ensure_path() {
     return 0
 }
 
+# ── 13. KDE Rice (Gunmetal Filament) ──────────────────────────────────────────
+# A reversible Plasma 6 rice, generated from a palette file rather than shipped
+# as a theme. Two things make it unlike every step above.
+#
+# It is machine-specific by construction: palette.toml declares three monitors by
+# name, resolution, scale AND Plasma containment id (43/44/45 — ids Plasma
+# assigned on one particular box). On any other layout the slideshow would be
+# pointed at containments that don't exist. So applying is gated on kderice's own
+# check_geometry.py, and a machine that doesn't match still gets the launcher.
+#
+# And it runs LAST, after configure_system. configure_taskbar rewrites the
+# panel's applet list and restarts plasmashell; kderice's README names re-applying
+# afterwards as the supported order. The two own disjoint keys — kderice never
+# writes launchers, AppletOrder or hiddenItems — so nothing is lost either way,
+# but the snapshot apply takes should be of the panel this script just wrote.
+install_kderice() {
+    step "KDE Rice"
+    return 0
+}
+
 # ── run ───────────────────────────────────────────────────────────────────────
 main() {
     banner
@@ -2640,6 +2671,7 @@ main() {
     wanted lorerim      && install_lorerim
     wanted wotlk        && install_wotlk
     wanted config       && configure_system
+    wanted kderice      && install_kderice
 
     if [[ $DRY_RUN -eq 1 ]]; then
         box "$BOLD$YELLOW" \

@@ -55,6 +55,13 @@ check_contains "unknown option names the culprit" "--bogus" "$out"
 out="$(bash "$SCRIPT" --only nonsense 2>&1)"; rc=$?
 [[ $rc -ne 0 ]] && pass "--only rejects an invalid step" || fail "--only rejects an invalid step" "exit $rc"
 
+out="$(bash "$SCRIPT" --only kderice --dry-run 2>&1)"; rc=$?
+check_eq "--only kderice is accepted" "0" "$rc"
+check_contains "--only error text names kderice" "kderice" \
+    "$(bash "$SCRIPT" --only nonsense 2>&1)"
+check_contains "--help documents the kderice step" "kderice" \
+    "$(bash "$SCRIPT" --help 2>&1)"
+
 # ── set -e footguns ───────────────────────────────────────────────────────────
 group "set -e cannot silently kill the run"
 
