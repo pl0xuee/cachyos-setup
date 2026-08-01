@@ -1445,6 +1445,43 @@ else
     pass "--dry-run downloads no AppImage"
 fi
 
+# ── KDE Rice ──────────────────────────────────────────────────────────────────
+group "KDE Rice"
+
+# Cloning must follow the AgentTileCLI pattern exactly: fast-forward only, so a
+# dev branch or uncommitted work in the clone is never clobbered.
+if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -q 'git -C .* pull --ff-only'; then
+    pass "kderice pulls fast-forward-only"
+else
+    fail "kderice pulls fast-forward-only" "a plain pull could clobber local work"
+fi
+
+# The step runs after configure_system: configure_taskbar rewrites the panel and
+# restarts plasmashell, and kderice must snapshot the panel this script wrote.
+kd_line="$(grep -n 'wanted kderice' "$SCRIPT" | cut -d: -f1)"
+cfg_line="$(grep -n 'wanted config' "$SCRIPT" | cut -d: -f1)"
+if [[ -n "$kd_line" && -n "$cfg_line" && "$kd_line" -gt "$cfg_line" ]]; then
+    pass "kderice runs after the config step"
+else
+    fail "kderice runs after the config step" "kderice=$kd_line config=$cfg_line"
+fi
+
+# Nothing in this step may be fatal — config has already run by then, and a rice
+# that wouldn't apply shouldn't cost the user the rest of a working setup.
+if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -qE '\bdie\b'; then
+    fail "kderice never calls die" "a failed rice would abort the whole run"
+else
+    pass "kderice never calls die"
+fi
+
+# kderice setup can sudo for the font when it's absent, and require_tty would
+# then stop and wait. Stdin closed means it can never block an unattended run.
+if grep -qF 'bin/kderice setup < /dev/null' "$SCRIPT"; then
+    pass "kderice setup is run with stdin closed"
+else
+    fail "kderice setup is run with stdin closed"
+fi
+
 # ── summary ───────────────────────────────────────────────────────────────────
 printf '\n%s%d passed, %d failed%s\n' "$BOLD" "$PASS" "$FAIL" "$RESET"
 [[ $FAIL -eq 0 ]]

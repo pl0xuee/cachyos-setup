@@ -2630,6 +2630,36 @@ ensure_path() {
     return 0
 }
 
+# Everything kderice needs from the repos, checked before it can fail deep inside
+# a Python traceback or a `die` in its own preflight.
+#
+# These are all in packages/pacman.txt, so a normal run has them already — but
+# `--only kderice` can reach here without the packages step, which is the same
+# reason verify_griddown pulls in minisign rather than failing.
+kderice_deps() {
+    local -a missing=()
+
+    python3 -c 'import numpy, PIL' 2>/dev/null || missing+=(python-numpy python-pillow)
+    have rsync          || missing+=(rsync)
+    have kscreen-doctor || missing+=(kscreen)
+    # fc-match always answers with SOMETHING — it falls back to a default font
+    # rather than failing — so the answer has to be inspected, not just its
+    # exit status. kderice's own preflight does exactly this.
+    [[ "$(fc-match --format='%{file}' 'Fira Mono' 2>/dev/null)" == *FiraMono* ]] \
+        || missing+=(ttf-fira-mono)
+    # No binary to probe for: this is a Qt image plugin, so its absence shows up
+    # as a black desktop, not a missing command.
+    pacman -Qq qt6-imageformats >/dev/null 2>&1 || missing+=(qt6-imageformats)
+
+    [[ ${#missing[@]} -eq 0 ]] && return 0
+
+    info "Installing kderice's dependencies (${missing[*]})..."
+    run sudo pacman -S --needed --noconfirm "${missing[@]}" && return 0
+
+    warn "couldn't install ${missing[*]} — skipping the rice"
+    return 1
+}
+
 # ── 13. KDE Rice (Gunmetal Filament) ──────────────────────────────────────────
 # A reversible Plasma 6 rice, generated from a palette file rather than shipped
 # as a theme. Two things make it unlike every step above.
@@ -2647,7 +2677,40 @@ ensure_path() {
 # but the snapshot apply takes should be of the panel this script just wrote.
 install_kderice() {
     step "KDE Rice"
-    return 0
+
+    kderice_deps || { report "KDE Rice" "SKIPPED (missing dependencies)"; return 0; }
+
+    local dir="$KDERICE_DIR"
+    run mkdir -p "$PROJECTS_DIR"
+
+    if [[ -d "$dir/.git" ]]; then
+        info "Clone exists — pulling latest..."
+        # Fast-forward only, same as AgentTileCLI: local commits, a dev branch or
+        # uncommitted palette edits make this refuse rather than clobber them.
+        if ! run git -C "$dir" pull --ff-only; then
+            warn "couldn't fast-forward $dir (local changes or a dev branch?) — using what's already there"
+        fi
+    else
+        info "Cloning into $dir..."
+        if ! run git clone "$KDERICE_REPO" "$dir"; then
+            warn "couldn't clone kderice — skipping the rice"
+            report "KDE Rice" "SKIPPED (clone failed)"
+            return 0
+        fi
+    fi
+
+    # Everything past here reads files out of the clone, and on a dry run there
+    # isn't one — `run git clone` only printed what it would have done.
+    if [[ $DRY_RUN -eq 1 ]]; then
+        run "(cd $dir && python3 generate/build.py)"
+        run "(cd $dir && python3 generate/wallpaper.py)  # only when slides are missing"
+        run "(cd $dir && ./bin/kderice setup < /dev/null)"
+        run "(cd $dir && ./bin/kderice apply)            # only when the monitors match palette.toml"
+        report "KDE Rice" "would clone, build and apply"
+        return 0
+    fi
+
+    ok "clone ready at $dir"
 }
 
 # ── run ───────────────────────────────────────────────────────────────────────
