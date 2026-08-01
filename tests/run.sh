@@ -1433,6 +1433,7 @@ check_eq "--dry-run creates no files in HOME" "$before" "$after"
 check_contains "--dry-run announces itself" "DRY RUN" "$out"
 check_contains "--dry-run would install packages" "[dry-run] sudo pacman -S --needed" "$out"
 check_contains "--dry-run would clone AgentTileCLI" "[dry-run] git clone" "$out"
+check_contains "--dry-run would build the rice" "generate/build.py" "$out"
 check_contains "--dry-run never invokes sudo" "no sudo needed" "$out"
 
 # A dry run must not leave a half-downloaded AppImage anywhere.
@@ -1549,6 +1550,35 @@ if awk '/install_kderice\(\)/,/^}/' "$SCRIPT" | grep -q 'kderice_geometry_ok .*b
 else
     fail "the gate checks build/wallpapers, not the installed dir" \
          "the installed dir is empty until apply runs, so the gate would always fail"
+fi
+
+# setup runs whether or not the gate passed. A machine the rice can't be applied
+# to still gets the KDE Rice launcher, so it can be applied by hand once
+# palette.toml is fixed — that's the whole point of gating apply rather than the
+# step.
+kd_body="$(awk '/^install_kderice\(\)/,/^}/' "$SCRIPT")"
+kd_setup="$(grep -n 'bin/kderice setup' <<<"$kd_body" | tail -1 | cut -d: -f1)"
+kd_gate="$(grep -n 'kderice_geometry_ok' <<<"$kd_body" | tail -1 | cut -d: -f1)"
+if [[ -n "$kd_setup" && -n "$kd_gate" && "$kd_setup" -lt "$kd_gate" ]]; then
+    pass "kderice setup runs before the apply gate is consulted"
+else
+    fail "kderice setup runs before the apply gate is consulted" \
+         "setup=$kd_setup gate=$kd_gate — a mismatched machine would get no launcher"
+fi
+
+# Whatever happens, the run must say so in the closing report.
+if grep -qE 'report "KDE Rice"' <<<"$kd_body"; then
+    pass "the step reports its outcome"
+else
+    fail "the step reports its outcome"
+fi
+
+# A rice that didn't apply is the one outcome a user would otherwise not notice —
+# their desktop just looks the same. It has to warn, not only report.
+if grep -q "don't match" <<<"$kd_body" || grep -q 'NOT applied' <<<"$kd_body"; then
+    pass "a gated rice is warned about, not applied silently"
+else
+    fail "a gated rice is warned about, not applied silently"
 fi
 
 # ── summary ───────────────────────────────────────────────────────────────────

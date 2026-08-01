@@ -2789,13 +2789,44 @@ install_kderice() {
         ok "$want wallpapers generated"
     fi
 
+    # Links kderice and kderice-launch into ~/.local/bin and installs the
+    # KDE Rice launcher entry and icon.
+    #
+    # Before the gate, and unconditional: a machine the rice can't be applied to
+    # still gets the toggle, so it can be riced by hand once palette.toml is
+    # fixed. Gating apply is the point; gating the install would leave nothing.
+    #
+    # Stdin closed: setup sudos for the font when it's missing, and its
+    # require_tty would otherwise stop and wait forever in an unattended run.
+    # ttf-fira-mono is in packages/pacman.txt and kderice_deps re-checks it, so
+    # in practice nothing here prompts at all.
+    if ! ( cd "$dir" && ./bin/kderice setup < /dev/null ); then
+        warn "kderice setup failed — skipping the rice"
+        report "KDE Rice" "SKIPPED (setup failed)"
+        return 0
+    fi
+    ok "kderice linked into $BIN_DIR, KDE Rice launcher installed"
+
+    local commit; commit="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
     local geom=""
     have kscreen-doctor && geom="$(kscreen-doctor -j 2>/dev/null || true)"
     if ! kderice_geometry_ok "$dir" "$dir/build/wallpapers" "$geom"; then
-        warn "this machine's monitors don't match kderice's palette.toml — the rice was built but NOT applied"
+        warn "this machine's monitors don't match kderice's palette.toml — the rice was built and the launcher installed, but NOT applied"
         warn "fix [wallpaper].sizes in $dir/palette.toml, then: (cd $dir && python3 generate/wallpaper.py && ./bin/kderice apply)"
-        report "KDE Rice" "built, NOT applied — monitor layout doesn't match palette.toml"
+        report "KDE Rice" "built ($commit), NOT applied — monitor layout doesn't match palette.toml"
         return 0
+    fi
+
+    # apply stops and restarts plasmashell itself, through the systemd user unit.
+    # Safe here because configure_taskbar has already finished with the panel.
+    info "Applying — plasmashell restarts, so the desktop will flicker..."
+    if ( cd "$dir" && ./bin/kderice apply ); then
+        ok "Gunmetal Filament applied"
+        report "KDE Rice" "applied ($commit) — 'kderice restore' puts stock Breeze back"
+    else
+        warn "kderice apply failed — the desktop is unchanged; run 'kderice status' to see why"
+        report "KDE Rice" "built ($commit), apply FAILED — try 'kderice status'"
     fi
 }
 
@@ -2862,6 +2893,8 @@ main() {
     printf '    %sStalkerGammaGui.AppImage%s  install, update and play S.T.A.L.K.E.R. GAMMA\n' "$BOLD" "$RESET"
     printf '    %sLorerimAutoinstall.AppImage%s  one-click LoreRim (Wabbajack) install\n' "$BOLD" "$RESET"
     printf '    %sWowWotlkAutoinstall.AppImage%s  one-click WoW 3.3.5a client install\n' "$BOLD" "$RESET"
+    printf '    %skderice%s               toggle the desktop rice (%skderice restore%s = stock Breeze)\n' \
+        "$BOLD" "$RESET" "$BOLD" "$RESET"
     printf '    %s(or find everything in the app menu)%s\n\n' "$DIM" "$RESET"
 }
 
