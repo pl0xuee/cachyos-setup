@@ -234,6 +234,19 @@ if [[ ${#fp[@]} -gt 0 ]]; then
     fi
 fi
 
+# kderice generates its wallpapers with numpy+Pillow, renders them as WebP that
+# Qt can only read through qt6-imageformats, refuses to apply without Fira Mono,
+# installs them with rsync, and is gated on kscreen-doctor's view of the
+# monitors. A missing one of these fails inside kderice, where the error is
+# much harder to read than it is here.
+for p in python-numpy python-pillow ttf-fira-mono qt6-imageformats kscreen rsync; do
+    if printf '%s\n' "${real[@]}" | grep -qx "$p"; then
+        pass "pacman.txt installs $p (kderice)"
+    else
+        fail "pacman.txt installs $p (kderice)" "kderice needs it"
+    fi
+done
+
 # ── every package actually resolves in an enabled repo ────────────────────────
 group "Package names resolve (live pacman query)"
 

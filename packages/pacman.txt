@@ -41,6 +41,21 @@ npm
 fuse2                        # StreamHub + ConsoleVault: AppImages need libfuse.so.2
 minisign                     # verifies ConsoleVault's signed AppImage before it runs
 
+# ── KDE rice (kderice) ────────────────────────────────────────────────
+# Wallpapers are generated, not shipped: 51 terrain variants rendered at
+# every output resolution.
+python-numpy                 # kderice: wallpaper generation
+python-pillow                # kderice: wallpaper generation
+# The slides are lossless WebP. Qt reads WebP only through this plugin —
+# without it Plasma shows a black desktop and no error.
+qt6-imageformats
+# 'kderice apply' hard-fails without this font. Installing it here also
+# means 'kderice setup' never has to sudo for it, so it can't stop to
+# prompt in the middle of an unattended run.
+ttf-fira-mono
+kscreen                      # kscreen-doctor — the monitor-geometry gate
+rsync                        # kderice apply installs the wallpapers with it
+
 # ── Optional extras ───────────────────────────────────────────────────
 # Currently on your machine but not in the list you gave me. Uncomment
 # any you want on a fresh box.
