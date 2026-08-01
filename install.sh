@@ -2630,6 +2630,34 @@ ensure_path() {
     return 0
 }
 
+# How many wallpaper slides palette.toml says there should be, and in what
+# format. Printed as "<count> <format>".
+#
+# Via Python's tomllib rather than grep: palette.toml is mostly prose comments,
+# and several of them are written as commented-out keys — the exact shape a
+# line-based parser would read as real. Nothing in bash reads TOML correctly.
+kderice_expected_slides() {
+    python3 - "$1" <<'PY' 2>/dev/null
+import sys, tomllib
+with open(sys.argv[1], "rb") as fh:
+    w = tomllib.load(fh)["wallpaper"]
+print(w["variants"] * len(w["sizes"]), w.get("format", "png"))
+PY
+}
+
+# Are the slides already generated? Generating them costs ~90s and ~590 MB, and
+# re-running install.sh is supposed to be a no-op.
+#
+# mindepth 2 because each slide lives in a subdirectory named for its resolution;
+# the -name filter because build/wallpapers also holds preview.png, the contact
+# sheet, which is not a slide.
+kderice_have_slides() {
+    local dir="$1" want="$2" fmt="$3" have
+    [[ -d "$dir" ]] || return 1
+    have="$(find "$dir" -mindepth 2 -type f -name "*.$fmt" 2>/dev/null | wc -l)"
+    [[ "$have" -ge "$want" ]]
+}
+
 # Everything kderice needs from the repos, checked before it can fail deep inside
 # a Python traceback or a `die` in its own preflight.
 #
@@ -2710,7 +2738,34 @@ install_kderice() {
         return 0
     fi
 
-    ok "clone ready at $dir"
+    info "Building the palette..."
+    # build.py asserts WCAG contrast, so a bad colour edit fails here rather than
+    # on screen. It's fast — no reason to ever skip it.
+    if ! ( cd "$dir" && python3 generate/build.py ); then
+        warn "kderice build failed — skipping the rice"
+        report "KDE Rice" "SKIPPED (build failed)"
+        return 0
+    fi
+
+    local want fmt
+    read -r want fmt <<<"$(kderice_expected_slides "$dir/palette.toml")"
+    if [[ -z "$want" ]]; then
+        warn "couldn't read [wallpaper] out of $dir/palette.toml — skipping the rice"
+        report "KDE Rice" "SKIPPED (unreadable palette.toml)"
+        return 0
+    fi
+
+    if kderice_have_slides "$dir/build/wallpapers" "$want" "$fmt"; then
+        skip "wallpapers already generated ($want slides)"
+    else
+        info "Generating $want wallpapers — takes about 90s and ~590 MB..."
+        if ! ( cd "$dir" && python3 generate/wallpaper.py ); then
+            warn "wallpaper generation failed — skipping the rice"
+            report "KDE Rice" "SKIPPED (wallpaper generation failed)"
+            return 0
+        fi
+        ok "$want wallpapers generated"
+    fi
 }
 
 # ── run ───────────────────────────────────────────────────────────────────────

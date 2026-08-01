@@ -1482,6 +1482,47 @@ else
     fail "kderice setup is run with stdin closed"
 fi
 
+# palette.toml is TOML, which bash cannot read. A hand-rolled parser would break
+# the first time a comment happened to look like a key — and the file is more
+# comment than key.
+kd="$tmp/kderice"; mkdir -p "$kd"
+cat > "$kd/palette.toml" <<'EOF'
+[wallpaper]
+# variants = 999   <- a comment shaped exactly like the key
+variants = 4
+format   = "webp"
+sizes = [
+  { w = 100, h = 200, scale = 1.0, containment = 43, output = "DP-1" },
+  { w = 300, h = 400, scale = 1.0, containment = 44, output = "DP-2" },
+]
+EOF
+check_eq "expected slide count is variants x outputs" "8 webp" \
+    "$(kderice_expected_slides "$kd/palette.toml")"
+
+# Slides live one directory down, named for their resolution. Counting at depth 1
+# would count nothing; counting every file would count the contact sheet too.
+mkdir -p "$kd/build/wallpapers/100x200" "$kd/build/wallpapers/300x400"
+kderice_have_slides "$kd/build/wallpapers" 8 webp \
+    && fail "incomplete wallpapers are regenerated" "empty dirs counted as complete" \
+    || pass "incomplete wallpapers are regenerated"
+
+for i in 1 2 3 4; do
+    : > "$kd/build/wallpapers/100x200/gunmetal-$i-100x200.webp"
+    : > "$kd/build/wallpapers/300x400/gunmetal-$i-300x400.webp"
+done
+kderice_have_slides "$kd/build/wallpapers" 8 webp \
+    && pass "complete wallpapers are reused" \
+    || fail "complete wallpapers are reused" "would regenerate 590 MB on every re-run"
+
+# A stray PNG contact sheet must not be mistaken for a slide. Asking for ONE png
+# is what makes this discriminate: preview.png sits at depth 1, so a mindepth of
+# 1 would find it, count 1, and wrongly report the set complete. Asking for 8
+# would pass either way and prove nothing.
+: > "$kd/build/wallpapers/preview.png"
+kderice_have_slides "$kd/build/wallpapers" 1 png \
+    && fail "the contact sheet is not counted as a slide" "mindepth is letting preview.png count" \
+    || pass "the contact sheet is not counted as a slide"
+
 # ── summary ───────────────────────────────────────────────────────────────────
 printf '\n%s%d passed, %d failed%s\n' "$BOLD" "$PASS" "$FAIL" "$RESET"
 [[ $FAIL -eq 0 ]]
