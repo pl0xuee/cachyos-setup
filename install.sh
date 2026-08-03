@@ -73,17 +73,6 @@ GRIDDOWN_BRANCH="master"
 # a key fetched from the release it's meant to vouch for proves nothing.
 GRIDDOWN_PUBKEY="RWR4H5doHqJ0FJLVbBQvbrbWfmA74M7CFZWb4R7gejBvNR3iwMMe28Je"
 
-# Castle of the Dreadkeep is an Electron/electron-builder game (Three.js raycaster).
-# electron-updater replaces the AppImage in place, so same stable path under
-# ~/.local/bin. Its release publishes no signature, but electron-builder writes a
-# latest-linux.yml carrying the AppImage's sha512 and size — verified below. Like
-# Disc Ripper's .zsync that's an integrity check, not a signature: the yml ships in
-# the same release, so it catches a corrupt or truncated download, not a swapped
-# one. Its AppImage asset is already unversioned (artifactName: ${name}.AppImage).
-DREADKEEP_DIR="$HOME/.local/share/dreadkeep"
-DREADKEEP_APPIMAGE="$BIN_DIR/CastleOfTheDreadkeep.AppImage"
-DREADKEEP_REPO="pl0xuee/castle-of-the-dreadkeep"
-
 # Stalker GAMMA GUI is an Avalonia/.NET AppImage that downloads, installs,
 # updates and launches S.T.A.L.K.E.R. GAMMA through Steam/Proton. Unlike the
 # Tauri/Electron apps above it has NO self-updater — re-running this script is
@@ -194,7 +183,7 @@ else
     BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; RESET=""
 fi
 STEP_N=0
-STEP_TOTAL=14    # preflight + 13 steps; recalculated below if --only is used
+STEP_TOTAL=13    # preflight + 12 steps; recalculated below if --only is used
 
 step() {
     STEP_N=$((STEP_N + 1))
@@ -350,8 +339,8 @@ Options:
   --dry-run       Print every command that would run, change nothing
   --only STEP     Run one step only:
                     packages | flatpak | agenttilecli | streamhub | consolevault
-                    discripper | griddown | dreadkeep | gammagui | lorerim
-                    wotlk | config | kderice
+                    discripper | griddown | gammagui | lorerim | wotlk
+                    config | kderice
   --skip-upgrade  Don't run 'pacman -Syu' first (not recommended — see below)
   -h, --help      This message
 
@@ -378,7 +367,7 @@ while [[ $# -gt 0 ]]; do
         # Guard the arg count first: `shift 2` with only one argument left
         # returns non-zero, and set -e would then exit silently — no usage, no
         # error, nothing. `./install.sh --only` would just print nothing and fail.
-        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | lorerim | wotlk | config | kderice)"
+        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | gammagui | lorerim | wotlk | config | kderice)"
                         ONLY="$2"; shift 2 ;;
         --skip-upgrade) SKIP_UPGRADE=1; shift ;;
         -h|--help)      usage; exit 0 ;;
@@ -388,8 +377,8 @@ done
 
 if [[ -n "$ONLY" ]]; then
     case "$ONLY" in
-        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|griddown|dreadkeep|gammagui|lorerim|wotlk|config|kderice) ;;
-        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | dreadkeep | gammagui | lorerim | wotlk | config | kderice" ;;
+        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|griddown|gammagui|lorerim|wotlk|config|kderice) ;;
+        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | gammagui | lorerim | wotlk | config | kderice" ;;
     esac
 fi
 wanted() { [[ -z "$ONLY" || "$ONLY" == "$1" ]]; }
@@ -1410,140 +1399,7 @@ StartupWMClass=griddown
 EOF
 }
 
-# ── 8. Castle of the Dreadkeep (prebuilt AppImage) ────────────────────────────
-# A procedural medieval castle crawler (retro raycaster FPS, Three.js in Electron).
-# Same GitHub-Releases-AppImage shape as the others, but electron-builder rather
-# than Tauri: no signature, so it's verified against the sha512 and size in the
-# release's latest-linux.yml (integrity, not a signature — see the note by
-# DREADKEEP_* above). Version-stamped so a re-run picks up a newer release.
-install_dreadkeep() {
-    step "Castle of the Dreadkeep"
-
-    local stamp="$DREADKEEP_DIR/.version"
-    local release tag url
-
-    info "Checking latest release..."
-    release="$(github_api "https://api.github.com/repos/$DREADKEEP_REPO/releases/latest")" \
-        || die "couldn't fetch the latest release from GitHub."
-    tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
-    # Unversioned asset name (artifactName: ${name}.AppImage). The trailing `"`
-    # keeps this off any sibling .AppImage.blockmap URL.
-    url="$(printf '%s' "$release" | grep -o 'https://[^"]*/castle-of-the-dreadkeep\.AppImage"' | head -1 | tr -d '"' || true)"
-
-    [[ -n "$tag" ]] || die "couldn't read a tag from the latest release."
-    [[ -n "$url" ]] || die "no castle-of-the-dreadkeep.AppImage asset in release $tag."
-
-    if [[ -f "$DREADKEEP_APPIMAGE" && -f "$stamp" ]] && [[ "$(cat "$stamp")" == "$tag" ]]; then
-        skip "Castle of the Dreadkeep $tag already installed"
-
-        if [[ ! -f "$APPS_DIR/com.dreadkeep.castle.desktop" || ! -f "$DREADKEEP_DIR/icon.png" ]]; then
-            info "Launcher missing — recreating it..."
-            mkdir -p "$APPS_DIR" "$DREADKEEP_DIR"
-            [[ -f "$DREADKEEP_DIR/icon.png" ]] || curl -fsSL -o "$DREADKEEP_DIR/icon.png" \
-                "https://raw.githubusercontent.com/$DREADKEEP_REPO/main/build/icon.png" \
-                || warn "couldn't fetch the icon"
-            write_dreadkeep_desktop
-            refresh_desktop_db
-            ok "launcher recreated"
-        fi
-
-        # Outside the repair branch above on purpose: that only fires when ours
-        # is missing or stale, and a stray can sit beside a perfectly good one.
-        prune_competing_launchers "com.dreadkeep.castle.desktop"
-
-        report "Castle of the Dreadkeep" "$tag already installed"
-        return
-    fi
-
-    run mkdir -p "$BIN_DIR" "$DREADKEEP_DIR" "$APPS_DIR"
-
-    info "Downloading Castle of the Dreadkeep $tag..."
-    local tmp="$DREADKEEP_APPIMAGE.partial"
-    if [[ $DRY_RUN -eq 1 ]]; then
-        run curl -fL --progress-bar -o "$tmp" "$url"
-        run "verify sha512/size against the release's latest-linux.yml"
-        run chmod +x "$tmp"
-        run mv -f "$tmp" "$DREADKEEP_APPIMAGE"
-        run curl -fsSL -o "$DREADKEEP_DIR/icon.png" "https://raw.githubusercontent.com/$DREADKEEP_REPO/main/build/icon.png"
-        run "write $APPS_DIR/com.dreadkeep.castle.desktop"
-        prune_competing_launchers "com.dreadkeep.castle.desktop"
-        run "stamp version $tag"
-    else
-        curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
-
-        # Verify before chmod, same as the others. There's no signature to check,
-        # but electron-builder records the sha512 and size in latest-linux.yml; a
-        # mismatch means a corrupt or truncated download and we stop rather than
-        # make it executable. (Same release as the binary, so this catches a broken
-        # transfer, not a maliciously swapped release.)
-        verify_dreadkeep "$tmp" "$tag" || { rm -f "$tmp"; die "Castle of the Dreadkeep download could not be verified — refusing to install it."; }
-
-        chmod +x "$tmp"
-        mv -f "$tmp" "$DREADKEEP_APPIMAGE"
-
-        curl -fsSL -o "$DREADKEEP_DIR/icon.png" \
-            "https://raw.githubusercontent.com/$DREADKEEP_REPO/main/build/icon.png" \
-            || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
-
-        write_dreadkeep_desktop
-        prune_competing_launchers "com.dreadkeep.castle.desktop"
-        printf '%s\n' "$tag" > "$stamp"
-        refresh_desktop_db
-    fi
-
-    ok "Castle of the Dreadkeep $tag installed to $DREADKEEP_APPIMAGE"
-    report "Castle of the Dreadkeep" "$tag (prebuilt AppImage) → $DREADKEEP_APPIMAGE"
-}
-
-# Verify the AppImage against the sha512 and size electron-builder records in the
-# release's latest-linux.yml. The digest there is base64, not hex, so the local
-# sha512sum output is converted before comparing. Returns non-zero if the yml can't
-# be fetched or the digest doesn't match.
-verify_dreadkeep() {
-    local file="$1" tag="$2"
-    local yml expected_sha expected_len actual_sha actual_len
-
-    yml="$(curl -fsSL "https://github.com/$DREADKEEP_REPO/releases/download/$tag/latest-linux.yml" 2>/dev/null)" \
-        || { warn "couldn't fetch latest-linux.yml — cannot verify the download"; return 1; }
-
-    # Take the top-level `sha512:`/`size:` from the files entry. head -1 picks the
-    # AppImage's (it's the only file in a linux-AppImage-only build, and the first
-    # either way); the duplicate top-level sha512 further down is the same value.
-    expected_sha="$(printf '%s\n' "$yml" | grep -m1 '^ *sha512:' | awk '{print $2}')"
-    expected_len="$(printf '%s\n' "$yml" | grep -m1 '^ *size:' | awk '{print $2}')"
-    [[ -n "$expected_sha" ]] || { warn "no sha512 in latest-linux.yml — cannot verify"; return 1; }
-
-    # electron-builder stores the digest base64-encoded; convert ours to match.
-    actual_sha="$(sha512sum "$file" | awk '{print $1}' | xxd -r -p | base64 -w0)"
-    actual_len="$(stat -c%s "$file")"
-
-    if [[ "$actual_sha" == "$expected_sha" ]] && [[ -z "$expected_len" || "$actual_len" == "$expected_len" ]]; then
-        ok "checksum verified (sha512, from latest-linux.yml)"
-        return 0
-    fi
-
-    warn "CHECKSUM MISMATCH — the download does not match latest-linux.yml"
-    warn "  expected: $expected_sha ($expected_len bytes)"
-    warn "  got:      $actual_sha ($actual_len bytes)"
-    return 1
-}
-
-write_dreadkeep_desktop() {
-    cat > "$APPS_DIR/com.dreadkeep.castle.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=Castle of the Dreadkeep
-Comment=A procedural medieval castle crawler — retro raycaster-style FPS
-Exec=$DREADKEEP_APPIMAGE
-Icon=$DREADKEEP_DIR/icon.png
-Terminal=false
-Categories=Game;ActionGame;
-StartupNotify=true
-StartupWMClass=castle-of-the-dreadkeep
-EOF
-}
-
-# ── 9. Stalker GAMMA GUI (prebuilt AppImage) ──────────────────────────────────
+# ── 8. Stalker GAMMA GUI (prebuilt AppImage) ──────────────────────────────────
 # An Avalonia/.NET GUI that downloads, installs, updates and launches
 # S.T.A.L.K.E.R. GAMMA via Steam/Proton. Same GitHub-Releases-AppImage shape as
 # the others but with no in-app updater: the version stamp is what picks up a
@@ -1692,7 +1548,7 @@ StartupWMClass=StalkerGamma.Gui
 EOF
 }
 
-# ── 10. LoreRim Autoinstall (prebuilt AppImage) ───────────────────────────────
+# ── 9. LoreRim Autoinstall (prebuilt AppImage) ────────────────────────────────
 # An Avalonia/.NET GUI that installs the LoreRim Wabbajack modlist for Skyrim —
 # Steam, Proton and Nexus handled automatically. Same GitHub-Releases-AppImage
 # shape as Stalker GAMMA GUI: no in-app updater, so the version stamp on re-run
@@ -1843,7 +1699,7 @@ MimeType=x-scheme-handler/jackify;
 EOF
 }
 
-# ── 11. WotLK Autoinstall (prebuilt AppImage) ─────────────────────────────────
+# ── 10. WotLK Autoinstall (prebuilt AppImage) ─────────────────────────────────
 # An Avalonia/.NET GUI that installs a World of Warcraft 3.3.5a client for a
 # local server — client download, realmlist, addons and a Steam/Proton shortcut.
 # Same GitHub-Releases-AppImage shape as Stalker GAMMA GUI and LoreRim: no
@@ -2020,7 +1876,7 @@ StartupWMClass=WowWotlk.Gui
 EOF
 }
 
-# ── 12. system config ─────────────────────────────────────────────────────────
+# ── 11. system config ─────────────────────────────────────────────────────────
 configure_system() {
     step "System config"
 
@@ -2710,7 +2566,7 @@ kderice_deps() {
     return 1
 }
 
-# ── 13. KDE Rice (Gunmetal Filament) ──────────────────────────────────────────
+# ── 12. KDE Rice (Gunmetal Filament) ──────────────────────────────────────────
 # A reversible Plasma 6 rice, generated from a palette file rather than shipped
 # as a theme. Two things make it unlike every step above.
 #
@@ -2865,7 +2721,6 @@ main() {
     wanted consolevault && install_consolevault
     wanted discripper   && install_discripper
     wanted griddown     && install_griddown
-    wanted dreadkeep    && install_dreadkeep
     wanted gammagui     && install_gammagui
     wanted lorerim      && install_lorerim
     wanted wotlk        && install_wotlk
@@ -2908,7 +2763,6 @@ main() {
     printf '    %sConsoleVault.AppImage%s ROM-collection launcher (SNES → PS3)\n' "$BOLD" "$RESET"
     printf '    %sDiscRipper.AppImage%s   auto-rip DVDs/Blu-rays to H.265 (Plex/Jellyfin)\n' "$BOLD" "$RESET"
     printf '    %sGridDown.AppImage%s     offline US maps — roads, trails, terrain\n' "$BOLD" "$RESET"
-    printf '    %sCastleOfTheDreadkeep.AppImage%s  procedural castle crawler (FPS)\n' "$BOLD" "$RESET"
     printf '    %sStalkerGammaGui.AppImage%s  install, update and play S.T.A.L.K.E.R. GAMMA\n' "$BOLD" "$RESET"
     printf '    %sLorerimAutoinstall.AppImage%s  one-click LoreRim (Wabbajack) install\n' "$BOLD" "$RESET"
     printf '    %sWowWotlkAutoinstall.AppImage%s  one-click WoW 3.3.5a client install\n' "$BOLD" "$RESET"

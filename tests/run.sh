@@ -120,13 +120,6 @@ else
          "a renamed asset would exit 1 with no message instead of the intended die"
 fi
 
-if awk '/^install_dreadkeep\(\)/,/^}/' "$SCRIPT" | grep -q 'grep -o .*castle-of-the-dreadkeep.*|| true'; then
-    pass "Castle of the Dreadkeep asset parsing survives a no-match (|| true)"
-else
-    fail "Castle of the Dreadkeep asset parsing survives a no-match" \
-         "a renamed asset would exit 1 with no message instead of the intended die"
-fi
-
 if awk '/^install_gammagui\(\)/,/^}/' "$SCRIPT" | grep -q 'grep -o .*StalkerGammaGui.*|| true'; then
     pass "Stalker GAMMA GUI asset parsing survives a no-match (|| true)"
 else
@@ -164,11 +157,6 @@ if awk '/^install_griddown\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_griddown .* ||
     pass "GridDown aborts the install on a failed verify"
 else
     fail "GridDown aborts on failed verify" "the download is chmod'd without a passing verify"
-fi
-if awk '/^install_dreadkeep\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_dreadkeep .* || .*die'; then
-    pass "Castle of the Dreadkeep aborts the install on a failed verify"
-else
-    fail "Castle of the Dreadkeep aborts on failed verify" "the download is chmod'd without a passing verify"
 fi
 if awk '/^install_gammagui\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_gammagui .* || .*die'; then
     pass "Stalker GAMMA GUI aborts the install on a failed verify"
@@ -271,7 +259,7 @@ fi
 group "Taskbar launcher list"
 
 mapfile -t tb < <(read_list "$REPO_ROOT/packages/taskbar.txt")
-check_eq "taskbar.txt parses to 14 launchers" "14" "${#tb[@]}"
+check_eq "taskbar.txt parses to 13 launchers" "13" "${#tb[@]}"
 
 # Every entry must be a .desktop name — 'applications:' prefixes or bare app
 # names silently produce a dead tile rather than an error.
@@ -288,7 +276,7 @@ fi
 # The order IS the feature — assert it, so a careless edit that reshuffles the
 # list gets caught rather than silently rearranging the taskbar.
 check_eq "launchers are in the intended order" \
-    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop com.discripper.app.desktop com.griddown.app.desktop com.dreadkeep.castle.desktop com.stalkergamma.gui.desktop com.lorerim.autoinstall.desktop com.wowwotlk.autoinstall.desktop" \
+    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop com.discripper.app.desktop com.griddown.app.desktop com.stalkergamma.gui.desktop com.lorerim.autoinstall.desktop com.wowwotlk.autoinstall.desktop" \
     "${tb[*]}"
 
 # ── KDE power settings ────────────────────────────────────────────────────────
@@ -669,104 +657,6 @@ else
     printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
 fi
 
-# ── Castle of the Dreadkeep release-API parsing ───────────────────────────────
-group "Castle of the Dreadkeep release-API parsing"
-
-dk_release="$(github_api "https://api.github.com/repos/$DREADKEEP_REPO/releases/latest" 2>/dev/null)"
-if [[ -z "$dk_release" ]]; then
-    fail "fetched the latest release" "empty response (rate-limited?)"
-else
-    pass "fetched the latest release"
-
-    dk_tag="$(printf '%s' "$dk_release" | grep -m1 '"tag_name"' | cut -d'"' -f4)"
-    dk_url="$(printf '%s' "$dk_release" | grep -o 'https://[^"]*/castle-of-the-dreadkeep\.AppImage"' | head -1 | tr -d '"')"
-
-    [[ "$dk_tag" =~ ^v[0-9]+\.[0-9]+ ]] && pass "tag parses as a version ($dk_tag)" \
-                                        || fail "tag parses as a version" "$dk_tag"
-    check_contains "asset URL ends in .AppImage" ".AppImage" "$dk_url"
-    check_contains "asset URL is a GitHub download URL" "github.com" "$dk_url"
-
-    # The pattern must not pick up the .blockmap sibling as the download target.
-    if [[ "$dk_url" == *.blockmap ]]; then
-        fail "asset URL is the AppImage, not the .blockmap" "$dk_url"
-    else
-        pass "asset URL is the AppImage, not the .blockmap"
-    fi
-
-    code="$(curl -sIL -o /dev/null -w '%{http_code}' "$dk_url" 2>/dev/null)"
-    check_eq "asset URL is reachable (HTTP 200)" "200" "$code"
-fi
-
-# ── Castle of the Dreadkeep checksum verification ─────────────────────────────
-group "Castle of the Dreadkeep checksum verification"
-
-if grep -qF 'verify_dreadkeep "$tmp" "$tag" ||' "$SCRIPT"; then
-    pass "download is verified before chmod +x"
-else
-    fail "download is verified before chmod +x" "the AppImage would be run unverified"
-fi
-
-if awk '/^verify_dreadkeep\(\)/,/^}/' "$SCRIPT" | grep -q 'return 1'; then
-    pass "an unverifiable checksum aborts rather than warning"
-else
-    fail "an unverifiable checksum aborts rather than warning"
-fi
-
-# The yml must actually carry a sha512 the installer can read — if electron-builder
-# ever changes that format, the installer would refuse every download, and this is
-# where we'd find out.
-if [[ -n "${dk_tag:-}" ]]; then
-    dk_yml="$(curl -fsSL "https://github.com/$DREADKEEP_REPO/releases/download/$dk_tag/latest-linux.yml" 2>/dev/null || true)"
-    if [[ -n "$dk_yml" ]]; then
-        pass "latest-linux.yml is published in the release"
-        dk_sha="$(printf '%s\n' "$dk_yml" | grep -m1 '^ *sha512:' | awk '{print $2}')"
-        [[ -n "$dk_sha" ]] && pass "latest-linux.yml carries a sha512" \
-                           || fail "latest-linux.yml carries a sha512" "no sha512 line"
-
-        # Prove the digest matches the real asset, using the installer's own
-        # base64 conversion — a hex/base64 mixup here would break every install.
-        if [[ -n "${dk_url:-}" && -n "$dk_sha" ]]; then
-            dkd="$(mktemp -d)"
-            if curl -fsSL "$dk_url" -o "$dkd/app.AppImage" 2>/dev/null; then
-                dk_actual="$(sha512sum "$dkd/app.AppImage" | awk '{print $1}' | xxd -r -p | base64 -w0)"
-                check_eq "real release matches the published sha512" "$dk_sha" "$dk_actual"
-            else
-                printf '  %s·%s couldn'\''t download the release — skipping live checksum\n' "$DIM" "$RESET"
-            fi
-            rm -rf "$dkd"
-        fi
-    else
-        fail "latest-linux.yml is published in the release" "couldn't fetch it"
-    fi
-fi
-
-# ── Castle of the Dreadkeep .desktop file ─────────────────────────────────────
-group "Castle of the Dreadkeep .desktop file"
-
-APPS_DIR="$tmp"
-DREADKEEP_APPIMAGE="/home/user/.local/bin/CastleOfTheDreadkeep.AppImage"
-DREADKEEP_DIR="/home/user/.local/share/dreadkeep"
-write_dreadkeep_desktop
-
-dk_desktop="$tmp/com.dreadkeep.castle.desktop"
-[[ -f "$dk_desktop" ]] && pass ".desktop file is written" || fail ".desktop file is written"
-dk_content="$(cat "$dk_desktop" 2>/dev/null || true)"
-
-check_contains "has [Desktop Entry] header" "[Desktop Entry]" "$dk_content"
-check_contains "Exec points at the AppImage" "Exec=$DREADKEEP_APPIMAGE" "$dk_content"
-check_contains "Icon uses an absolute path"  "Icon=$DREADKEEP_DIR/icon.png" "$dk_content"
-check_contains "Type=Application" "Type=Application" "$dk_content"
-
-if have desktop-file-validate; then
-    if err="$(desktop-file-validate "$dk_desktop" 2>&1)"; then
-        pass "passes desktop-file-validate"
-    else
-        fail "passes desktop-file-validate" "$err"
-    fi
-else
-    printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
-fi
-
 # ── Stalker GAMMA GUI release-API parsing ─────────────────────────────────────
 group "Stalker GAMMA GUI release-API parsing"
 
@@ -1031,7 +921,7 @@ fi
 # Every app that writes a launcher prunes competitors for it, on both the
 # already-installed path and the install path — so a new app added later can't
 # quietly skip it.
-for app in streamhub consolevault discripper griddown dreadkeep gammagui lorerim wotlk; do
+for app in streamhub consolevault discripper griddown gammagui lorerim wotlk; do
     app_block="$(awk "/^install_$app\\(\\)/,/^}/" "$SCRIPT")"
     n="$(grep -c 'prune_competing_launchers' <<<"$app_block")"
     if [[ "$n" -ge 2 ]]; then
@@ -1438,7 +1328,7 @@ check_contains "--dry-run never invokes sudo" "no sudo needed" "$out"
 
 # A dry run must not leave a half-downloaded AppImage anywhere.
 if [[ -e "$fake_home/.local/bin/StreamHub.AppImage" || -e "$fake_home/.local/bin/ConsoleVault.AppImage" \
-   || -e "$fake_home/.local/bin/GridDown.AppImage" || -e "$fake_home/.local/bin/CastleOfTheDreadkeep.AppImage" \
+   || -e "$fake_home/.local/bin/GridDown.AppImage" \
    || -e "$fake_home/.local/bin/StalkerGammaGui.AppImage" || -e "$fake_home/.local/bin/LorerimAutoinstall.AppImage" \
    || -e "$fake_home/.local/bin/WowWotlkAutoinstall.AppImage" ]]; then
     fail "--dry-run downloads no AppImage"
