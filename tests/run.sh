@@ -174,6 +174,18 @@ else
     fail "WotLK Autoinstall aborts on failed verify" "the download is chmod'd without a passing verify"
 fi
 
+if awk '/^install_livewire\(\)/,/^}/' "$SCRIPT" | grep -q 'grep -o .*_amd64.*|| true'; then
+    pass "livewire asset parsing survives a no-match (|| true)"
+else
+    fail "livewire asset parsing survives a no-match" \
+         "a renamed asset would exit 1 with no message instead of the intended die"
+fi
+if awk '/^install_livewire\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_livewire .* || .*die'; then
+    pass "livewire aborts the install on a failed verify"
+else
+    fail "livewire aborts on failed verify" "the download is chmod'd without a passing verify"
+fi
+
 # `--only` with no value: `shift 2` fails, set -e exits, user sees nothing.
 out="$(bash "$SCRIPT" --only 2>&1)"; rc=$?
 [[ $rc -ne 0 ]] && pass "--only with no value exits non-zero" || fail "--only with no value exits non-zero"
@@ -242,6 +254,19 @@ for p in python-numpy python-pillow ttf-fira-mono qt6-imageformats kscreen rsync
     fi
 done
 
+# AgentTileCLI's own install.sh preflights every one of these with pkg-config
+# (rust as cargo) and refuses to build without them. None can be assumed on a
+# bare box: gtksourceview5 is required by nothing else in the list, and
+# libadwaita only rides in as a dependency of lact — one lact update away from
+# not arriving at all.
+for p in rust pkgconf gtk4 vte4 libadwaita gtksourceview5; do
+    if printf '%s\n' "${real[@]}" | grep -qx "$p"; then
+        pass "pacman.txt installs $p (AgentTileCLI)"
+    else
+        fail "pacman.txt installs $p (AgentTileCLI)" "AgentTileCLI's build preflight refuses without it"
+    fi
+done
+
 # ── every package actually resolves in an enabled repo ────────────────────────
 group "Package names resolve (live pacman query)"
 
@@ -259,7 +284,7 @@ fi
 group "Taskbar launcher list"
 
 mapfile -t tb < <(read_list "$REPO_ROOT/packages/taskbar.txt")
-check_eq "taskbar.txt parses to 13 launchers" "13" "${#tb[@]}"
+check_eq "taskbar.txt parses to 14 launchers" "14" "${#tb[@]}"
 
 # Every entry must be a .desktop name — 'applications:' prefixes or bare app
 # names silently produce a dead tile rather than an error.
@@ -276,7 +301,7 @@ fi
 # The order IS the feature — assert it, so a careless edit that reshuffles the
 # list gets caught rather than silently rearranging the taskbar.
 check_eq "launchers are in the intended order" \
-    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop com.discripper.app.desktop com.griddown.app.desktop com.stalkergamma.gui.desktop com.lorerim.autoinstall.desktop com.wowwotlk.autoinstall.desktop" \
+    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop com.discripper.app.desktop com.griddown.app.desktop com.stalkergamma.gui.desktop com.lorerim.autoinstall.desktop com.wowwotlk.autoinstall.desktop livewire.desktop" \
     "${tb[*]}"
 
 # ── KDE power settings ────────────────────────────────────────────────────────
@@ -322,7 +347,10 @@ group "No step can hang waiting for input"
 # when stdin is a tty — so it passes silently over SSH and hangs forever when a
 # human runs this from a real terminal. Every sub-script we shell out to must
 # have stdin closed.
-if grep -qF './install.sh < /dev/null' "$SCRIPT"; then
+#
+# Scoped to the function, not the whole script, so an identical invocation in
+# some other step can never vouch for this one.
+if awk '/^install_agenttilecli\(\)/,/^}/' "$SCRIPT" | grep -qF './install.sh < /dev/null'; then
     pass "AgentTileCLI's installer is run with stdin closed"
 else
     fail "AgentTileCLI's installer is run with stdin closed" \
@@ -921,7 +949,7 @@ fi
 # Every app that writes a launcher prunes competitors for it, on both the
 # already-installed path and the install path — so a new app added later can't
 # quietly skip it.
-for app in streamhub consolevault discripper griddown gammagui lorerim wotlk; do
+for app in streamhub consolevault discripper griddown gammagui lorerim wotlk livewire; do
     app_block="$(awk "/^install_$app\\(\\)/,/^}/" "$SCRIPT")"
     n="$(grep -c 'prune_competing_launchers' <<<"$app_block")"
     if [[ "$n" -ge 2 ]]; then
@@ -1298,6 +1326,134 @@ else
     printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
 fi
 
+# ── livewire release-API parsing ──────────────────────────────────────────────
+group "livewire release-API parsing"
+
+out="$(bash "$SCRIPT" --only livewire --dry-run 2>&1)"; rc=$?
+check_eq "--only livewire is accepted" "0" "$rc"
+
+# The step must run before config: configure_taskbar pins livewire.desktop, and
+# a launcher that doesn't exist yet is skipped with a warning, not pinned.
+lw_line="$(grep -n -m1 'wanted livewire' "$SCRIPT" | cut -d: -f1)"
+lw_cfg_line="$(grep -n -m1 'wanted config' "$SCRIPT" | cut -d: -f1)"
+if [[ -n "$lw_line" && -n "$lw_cfg_line" && "$lw_line" -lt "$lw_cfg_line" ]]; then
+    pass "livewire installs before the config step pins the taskbar"
+else
+    fail "livewire installs before the config step" "livewire=$lw_line config=$lw_cfg_line"
+fi
+
+lw_release="$(github_api "https://api.github.com/repos/$LIVEWIRE_REPO/releases/latest" 2>/dev/null)"
+if [[ -z "$lw_release" ]]; then
+    fail "fetched the latest release" "empty response (rate-limited?)"
+else
+    pass "fetched the latest release"
+
+    lw_tag="$(printf '%s' "$lw_release" | grep -m1 '"tag_name"' | cut -d'"' -f4)"
+    lw_url="$(printf '%s' "$lw_release" | grep -o 'https://[^"]*_amd64\.AppImage"' | head -1 | tr -d '"')"
+
+    [[ "$lw_tag" =~ ^v[0-9]+\.[0-9]+ ]] && pass "tag parses as a version ($lw_tag)" \
+                                        || fail "tag parses as a version" "$lw_tag"
+    check_contains "asset URL ends in _amd64.AppImage" "_amd64.AppImage" "$lw_url"
+    check_contains "asset URL is a GitHub download URL" "github.com" "$lw_url"
+
+    # The release also publishes a raw livewire-linux-x86_64 binary; the
+    # pattern must pick the AppImage, never that.
+    if [[ "$lw_url" == *linux-x86_64* ]]; then
+        fail "asset URL is the AppImage, not the raw binary" "$lw_url"
+    else
+        pass "asset URL is the AppImage, not the raw binary"
+    fi
+
+    code="$(curl -sIL -o /dev/null -w '%{http_code}' "$lw_url" 2>/dev/null)"
+    check_eq "asset URL is reachable (HTTP 200)" "200" "$code"
+fi
+
+# ── livewire checksum verification ────────────────────────────────────────────
+group "livewire checksum verification"
+
+if grep -qF 'verify_livewire "$tmp" "$digest" ||' "$SCRIPT"; then
+    pass "download is verified before chmod +x"
+else
+    fail "download is verified before chmod +x" "the AppImage would be run unverified"
+fi
+
+if awk '/^verify_livewire\(\)/,/^}/' "$SCRIPT" | grep -q 'return 1'; then
+    pass "an unverifiable checksum aborts rather than warning"
+else
+    fail "an unverifiable checksum aborts rather than warning"
+fi
+
+# Unlike GAMMA/LoreRim the asset name is versioned, so the installer reads the
+# name off the matched URL and looks the digest up under it. Prove the live
+# release actually carries one there, using the installer's own extraction —
+# if GitHub drops the field or the naming changes shape, every install would
+# be refused, and this is where we'd find out.
+if [[ -n "$lw_release" && -n "${lw_url:-}" ]]; then
+    lw_asset="${lw_url##*/}"
+    lw_digest="$(printf '%s' "$lw_release" | LIVEWIRE_ASSET="$lw_asset" python -c '
+import json, os, sys
+for a in json.load(sys.stdin).get("assets", []):
+    if a.get("name") == os.environ["LIVEWIRE_ASSET"]:
+        d = a.get("digest") or ""
+        if d.startswith("sha256:"):
+            print(d[len("sha256:"):])
+        break
+' 2>/dev/null)"
+    if [[ "$lw_digest" =~ ^[0-9a-f]{64}$ ]]; then
+        pass "releases API carries a sha256 digest for the asset"
+    else
+        fail "releases API carries a sha256 digest" "got: ${lw_digest:-nothing}"
+    fi
+
+    # Prove the digest matches the real asset — a mismatch here means either a
+    # bad release or a broken verify path, and both would refuse every install.
+    if [[ "$lw_digest" =~ ^[0-9a-f]{64}$ ]]; then
+        lwd="$(mktemp -d)"
+        if curl -fsSL "$lw_url" -o "$lwd/app.AppImage" 2>/dev/null; then
+            lw_actual="$(sha256sum "$lwd/app.AppImage" | awk '{print $1}')"
+            check_eq "real release matches the API's sha256 digest" "$lw_digest" "$lw_actual"
+        else
+            printf '  %s·%s couldn'\''t download the release — skipping live checksum\n' "$DIM" "$RESET"
+        fi
+        rm -rf "$lwd"
+    fi
+fi
+
+# ── livewire .desktop file ────────────────────────────────────────────────────
+group "livewire .desktop file"
+
+APPS_DIR="$tmp"
+LIVEWIRE_APPIMAGE="/home/user/.local/bin/Livewire.AppImage"
+LIVEWIRE_DIR="/home/user/.local/share/livewire"
+write_livewire_desktop
+
+# The file NAME is part of the contract, not a style choice: KWin resolves the
+# running window's icon by matching its Wayland app-id ("livewire") to a
+# .desktop of that name, so a com.livewire.app.desktop would leave the running
+# window with a generic icon.
+lw_desktop="$tmp/livewire.desktop"
+[[ -f "$lw_desktop" ]] && pass ".desktop file is written, named for the Wayland app-id" \
+                       || fail ".desktop file is written, named for the Wayland app-id"
+lw_content="$(cat "$lw_desktop" 2>/dev/null || true)"
+
+check_contains "has [Desktop Entry] header" "[Desktop Entry]" "$lw_content"
+check_contains "Exec points at the AppImage" "Exec=$LIVEWIRE_APPIMAGE" "$lw_content"
+check_contains "Icon uses an absolute path"  "Icon=$LIVEWIRE_DIR/icon.png" "$lw_content"
+check_contains "Type=Application" "Type=Application" "$lw_content"
+# The WM_CLASS comes from the Tauri crate name — same drift hazard GridDown
+# already hit when its crate was renamed.
+check_contains "StartupWMClass matches the Tauri crate name" "StartupWMClass=livewire" "$lw_content"
+
+if have desktop-file-validate; then
+    if err="$(desktop-file-validate "$lw_desktop" 2>&1)"; then
+        pass "passes desktop-file-validate"
+    else
+        fail "passes desktop-file-validate" "$err"
+    fi
+else
+    printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
+fi
+
 # ── --dry-run is genuinely inert ──────────────────────────────────────────────
 group "--dry-run changes nothing"
 
@@ -1330,7 +1486,7 @@ check_contains "--dry-run never invokes sudo" "no sudo needed" "$out"
 if [[ -e "$fake_home/.local/bin/StreamHub.AppImage" || -e "$fake_home/.local/bin/ConsoleVault.AppImage" \
    || -e "$fake_home/.local/bin/GridDown.AppImage" \
    || -e "$fake_home/.local/bin/StalkerGammaGui.AppImage" || -e "$fake_home/.local/bin/LorerimAutoinstall.AppImage" \
-   || -e "$fake_home/.local/bin/WowWotlkAutoinstall.AppImage" ]]; then
+   || -e "$fake_home/.local/bin/WowWotlkAutoinstall.AppImage" || -e "$fake_home/.local/bin/Livewire.AppImage" ]]; then
     fail "--dry-run downloads no AppImage"
 else
     pass "--dry-run downloads no AppImage"

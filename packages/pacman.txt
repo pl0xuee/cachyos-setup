@@ -34,8 +34,14 @@ github-cli                   # the `gh` command
 base-devel                   # gcc, make, pkg-config wrappers
 rust                         # cargo — builds AgentTileCLI
 pkgconf
+# The next four are AgentTileCLI's build deps, exactly what its own
+# install.sh preflight checks for (and its README's Arch hint installs).
+# libadwaita happens to ride in as a dependency of lact today, but that's
+# lact's business — name everything the build needs, not just what's left.
 gtk4                         # AgentTileCLI: GTK4 >= 4.12
-vte4                         # AgentTileCLI: terminal widget, VTE >= 0.65
+vte4                         # AgentTileCLI: terminal widget, VTE >= 0.70
+libadwaita                   # AgentTileCLI: app chrome (header bar, dialogs), >= 1.5
+gtksourceview5               # AgentTileCLI: the sidebar's file editor
 nodejs                       # StreamHub (only if building from source)
 npm
 fuse2                        # StreamHub + ConsoleVault: AppImages need libfuse.so.2
