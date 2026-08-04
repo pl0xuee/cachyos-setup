@@ -133,6 +133,27 @@ LIVEWIRE_DIR="$HOME/.local/share/livewire"
 LIVEWIRE_APPIMAGE="$BIN_DIR/Livewire.AppImage"
 LIVEWIRE_REPO="pl0xuee/github-livewire"
 
+# Music AI Player is a Tauri music player for long coding sessions — SQLite
+# library, crossfade, shuffle, playlists, visualizer — filled from a yt-dlp
+# importer, a folder scan, or a local ACE-Step generator. Back to the
+# ConsoleVault/GridDown shape after the last three: the Tauri updater IS enabled
+# here (the release ships latest.json and a minisign .sig), so it replaces its
+# own AppImage in place and the version stamp only matters for the first run
+# after a release the app hasn't picked up itself. Versioned asset name
+# (Music.AI.Player_x.y.z_amd64.AppImage) installed under a stable one, for the
+# same reason as the other Tauri apps: the updater overwrites whatever path it
+# is running from, and the launcher needs a filename that won't move. Default
+# branch is master, not main.
+MUSICAI_DIR="$HOME/.local/share/music-ai-player"
+MUSICAI_APPIMAGE="$BIN_DIR/MusicAIPlayer.AppImage"
+MUSICAI_REPO="pl0xuee/music-ai-player"
+MUSICAI_BRANCH="master"
+# minisign public key from the app's src-tauri/tauri.conf.json. Tauri stores it
+# there base64-encoded (the whole key *file*); this is the decoded key line, the
+# form `minisign -P` wants — same as GridDown's. Hard-coded for the same reason
+# as the others: a key fetched from the release it vouches for proves nothing.
+MUSICAI_PUBKEY="RWQAo9xTlRVM+fTKa7sSVc0P+nIEuLCEDbEOtfEK10uMzI0sbx7BAO/S"
+
 # kderice — "Gunmetal Filament", a reversible KDE Plasma 6 rice. Not an app but a
 # set of edits to the desktop's own config, generated from a single palette file.
 #
@@ -198,7 +219,7 @@ else
     BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; RESET=""
 fi
 STEP_N=0
-STEP_TOTAL=14    # preflight + 13 steps; recalculated below if --only is used
+STEP_TOTAL=15    # preflight + 14 steps; recalculated below if --only is used
 
 step() {
     STEP_N=$((STEP_N + 1))
@@ -355,7 +376,7 @@ Options:
   --only STEP     Run one step only:
                     packages | flatpak | agenttilecli | streamhub | consolevault
                     discripper | griddown | gammagui | lorerim | wotlk
-                    livewire | config | kderice
+                    livewire | musicai | config | kderice
   --skip-upgrade  Don't run 'pacman -Syu' first (not recommended — see below)
   -h, --help      This message
 
@@ -382,7 +403,7 @@ while [[ $# -gt 0 ]]; do
         # Guard the arg count first: `shift 2` with only one argument left
         # returns non-zero, and set -e would then exit silently — no usage, no
         # error, nothing. `./install.sh --only` would just print nothing and fail.
-        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | gammagui | lorerim | wotlk | livewire | config | kderice)"
+        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | gammagui | lorerim | wotlk | livewire | musicai | config | kderice)"
                         ONLY="$2"; shift 2 ;;
         --skip-upgrade) SKIP_UPGRADE=1; shift ;;
         -h|--help)      usage; exit 0 ;;
@@ -392,8 +413,8 @@ done
 
 if [[ -n "$ONLY" ]]; then
     case "$ONLY" in
-        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|griddown|gammagui|lorerim|wotlk|livewire|config|kderice) ;;
-        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | gammagui | lorerim | wotlk | livewire | config | kderice" ;;
+        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|griddown|gammagui|lorerim|wotlk|livewire|musicai|config|kderice) ;;
+        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | gammagui | lorerim | wotlk | livewire | musicai | config | kderice" ;;
     esac
 fi
 wanted() { [[ -z "$ONLY" || "$ONLY" == "$1" ]]; }
@@ -944,9 +965,18 @@ prune_competing_launchers() {
     # literal at all seven call sites. 63b72a5 is the standing reminder that
     # these drift: GridDown's went from GridDown to griddown, and a call site
     # left on the old value would delete the very launcher it means to protect.
-    wmclass="$(sed -n 's/^StartupWMClass=//p' "$APPS_DIR/$keep" 2>/dev/null | head -1)"
     # No launcher, or one carrying no class, means nothing to compare against —
     # prune nothing rather than let an empty class match loosely.
+    #
+    # The -f test has to come first, not just be implied by an empty $wmclass:
+    # sed exits 2 on a missing file, pipefail hands that to the assignment, and
+    # set -e kills the whole run before the -n check below is ever reached. That
+    # is exactly the dry-run path — nothing writes the launcher, so it is always
+    # missing — on any box where $APPS_DIR itself exists, which is every box that
+    # has run this script once. Every app here calls this, so it took until one
+    # of them was new on an already-set-up machine for it to show.
+    [[ -f "$APPS_DIR/$keep" ]] || return 0
+    wmclass="$(sed -n 's/^StartupWMClass=//p' "$APPS_DIR/$keep" 2>/dev/null | head -1)"
     [[ -n "$wmclass" ]] || return 0
 
     for f in "$APPS_DIR"/*.desktop; do
@@ -2046,7 +2076,160 @@ StartupWMClass=livewire
 EOF
 }
 
-# ── 12. system config ─────────────────────────────────────────────────────────
+# ── 12. Music AI Player (prebuilt AppImage) ───────────────────────────────────
+# A local music player for long coding sessions — SQLite library, crossfade,
+# shuffle, playlists, visualizer, tray and media keys. Same shape as ConsoleVault
+# and GridDown (Tauri, updater on, minisign-signed release), so the download is
+# checked against the embedded public key before it's made executable. Version
+# stamped like the rest, though the app self-updates from here on.
+install_musicai() {
+    step "Music AI Player"
+
+    local stamp="$MUSICAI_DIR/.version"
+    local release tag url
+
+    info "Checking latest release..."
+    release="$(github_api "https://api.github.com/repos/$MUSICAI_REPO/releases/latest")" \
+        || die "couldn't fetch the latest release from GitHub."
+    # `|| true` guards against grep's exit-1-on-no-match tripping pipefail+set -e
+    # before the clear messages below can run — same reasoning as StreamHub.
+    tag="$(printf '%s' "$release" | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
+    # Versioned Tauri asset name (Music.AI.Player_x.y.z_amd64.AppImage), matched
+    # by its suffix as ConsoleVault's is. The trailing `"` is what keeps this off
+    # the sibling ..._amd64.AppImage.sig URL, which continues past `.AppImage`;
+    # the `.AppImage` itself keeps it off the ..._amd64.deb the release also ships.
+    url="$(printf '%s' "$release" | grep -o 'https://[^"]*_amd64\.AppImage"' | head -1 | tr -d '"' || true)"
+
+    [[ -n "$tag" ]] || die "couldn't read a tag from the latest release."
+    [[ -n "$url" ]] || die "no Music AI Player _amd64.AppImage asset in release $tag."
+
+    if [[ -f "$MUSICAI_APPIMAGE" && -f "$stamp" ]] && [[ "$(cat "$stamp")" == "$tag" ]]; then
+        skip "Music AI Player $tag already installed (it self-updates from here on)"
+
+        # Same launcher-repair path as the others: a matching stamp would otherwise
+        # skip this step forever, stranding a deleted .desktop or icon.
+        if [[ ! -f "$APPS_DIR/music-ai-player.desktop" || ! -f "$MUSICAI_DIR/icon.png" ]]; then
+            info "Launcher missing — recreating it..."
+            mkdir -p "$APPS_DIR" "$MUSICAI_DIR"
+            [[ -f "$MUSICAI_DIR/icon.png" ]] || curl -fsSL -o "$MUSICAI_DIR/icon.png" \
+                "https://raw.githubusercontent.com/$MUSICAI_REPO/$MUSICAI_BRANCH/src-tauri/icons/icon.png" \
+                || warn "couldn't fetch the icon"
+            write_musicai_desktop
+            refresh_desktop_db
+            ok "launcher recreated"
+        fi
+
+        # Outside the repair branch above on purpose: that only fires when ours
+        # is missing or stale, and a stray can sit beside a perfectly good one.
+        prune_competing_launchers "music-ai-player.desktop"
+
+        report "Music AI Player" "$tag already installed"
+        return
+    fi
+
+    run mkdir -p "$BIN_DIR" "$MUSICAI_DIR" "$APPS_DIR"
+
+    info "Downloading Music AI Player $tag..."
+    # Temp file beside the target, moved into place only after it verifies — an
+    # interrupted or unverifiable download never replaces a working AppImage.
+    local tmp="$MUSICAI_APPIMAGE.partial"
+    if [[ $DRY_RUN -eq 1 ]]; then
+        run curl -fL --progress-bar -o "$tmp" "$url"
+        run "verify minisign signature against the embedded public key"
+        run chmod +x "$tmp"
+        run mv -f "$tmp" "$MUSICAI_APPIMAGE"
+        run curl -fsSL -o "$MUSICAI_DIR/icon.png" "https://raw.githubusercontent.com/$MUSICAI_REPO/$MUSICAI_BRANCH/src-tauri/icons/icon.png"
+        run "write $APPS_DIR/music-ai-player.desktop"
+        prune_competing_launchers "music-ai-player.desktop"
+        run "stamp version $tag"
+    else
+        curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed."; }
+
+        # Verify before making it executable — same stance as every other AppImage
+        # here: a binary off the internet about to run with your user's privileges,
+        # and Tauri signs every release, so there's no reason to trust it blind.
+        verify_musicai "$tmp" "$url" || { rm -f "$tmp"; die "Music AI Player download could not be verified — refusing to install it."; }
+
+        chmod +x "$tmp"
+        mv -f "$tmp" "$MUSICAI_APPIMAGE"
+
+        curl -fsSL -o "$MUSICAI_DIR/icon.png" \
+            "https://raw.githubusercontent.com/$MUSICAI_REPO/$MUSICAI_BRANCH/src-tauri/icons/icon.png" \
+            || warn "couldn't fetch the icon — the launcher entry will fall back to a generic one"
+
+        write_musicai_desktop
+        prune_competing_launchers "music-ai-player.desktop"
+        printf '%s\n' "$tag" > "$stamp"
+        refresh_desktop_db
+
+        # The player itself needs nothing else, but its YouTube importer shells out
+        # to yt-dlp and ffmpeg on PATH. Both are in packages/pacman.txt, so this
+        # only fires under `--only musicai` on a box that skipped that step — say
+        # so once rather than letting the Import panel be the one to explain it.
+        if ! have yt-dlp || ! have ffmpeg; then
+            warn "yt-dlp and/or ffmpeg are missing — playback works, but the YouTube importer won't (run this without --only, or: sudo pacman -S --needed yt-dlp ffmpeg)"
+        fi
+    fi
+
+    ok "Music AI Player $tag installed to $MUSICAI_APPIMAGE"
+    report "Music AI Player" "$tag (prebuilt AppImage) → $MUSICAI_APPIMAGE"
+}
+
+# Verify the AppImage against the minisign signature published beside it
+# (…AppImage.sig), using the key baked into this script. Returns non-zero if the
+# signature is missing, malformed or doesn't match — "couldn't check" is treated
+# exactly like "failed", never like "passed".
+verify_musicai() {
+    local file="$1" url="$2"
+
+    # minisign is in packages/pacman.txt (for ConsoleVault), but `--only musicai`
+    # can reach here without the packages step, so pull it in rather than failing.
+    if ! have minisign; then
+        info "Installing minisign (needed to verify the download)..."
+        run sudo pacman -S --needed --noconfirm minisign \
+            || { warn "couldn't install minisign — cannot verify the download"; return 1; }
+    fi
+
+    # Tauri publishes the .sig as base64 of the actual minisign signature file, so
+    # it has to be decoded before minisign will read it.
+    local sig="$file.minisig"
+    curl -fsSL "$url.sig" 2>/dev/null | base64 -d > "$sig" 2>/dev/null \
+        || { warn "couldn't fetch/decode the .sig — cannot verify the download"; rm -f "$sig"; return 1; }
+    [[ -s "$sig" ]] || { warn "empty signature — cannot verify the download"; rm -f "$sig"; return 1; }
+
+    if minisign -Vm "$file" -x "$sig" -P "$MUSICAI_PUBKEY" >/dev/null 2>&1; then
+        rm -f "$sig"
+        ok "signature verified (minisign)"
+        return 0
+    fi
+
+    rm -f "$sig"
+    warn "SIGNATURE MISMATCH — the download does not match the published minisign signature"
+    return 1
+}
+
+# Named music-ai-player.desktop, not com.<app>.app.desktop like most of the
+# others, for livewire's reason: on Wayland the compositor matches a running
+# window to a .desktop by its app-id, which Tauri takes from the crate name
+# ("music-ai-player" here) — so a com.musicaiplayer.app.desktop would leave the
+# running window with a generic icon. StartupWMClass carries the same value for
+# X11's WM_CLASS match.
+write_musicai_desktop() {
+    cat > "$APPS_DIR/music-ai-player.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Music AI Player
+Comment=Local music player — YouTube import, folder scan, ACE-Step generation
+Exec=$MUSICAI_APPIMAGE
+Icon=$MUSICAI_DIR/icon.png
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupNotify=true
+StartupWMClass=music-ai-player
+EOF
+}
+
+# ── 13. system config ─────────────────────────────────────────────────────────
 configure_system() {
     step "System config"
 
@@ -2736,7 +2919,7 @@ kderice_deps() {
     return 1
 }
 
-# ── 13. KDE Rice (Gunmetal Filament) ──────────────────────────────────────────
+# ── 14. KDE Rice (Gunmetal Filament) ──────────────────────────────────────────
 # A reversible Plasma 6 rice, generated from a palette file rather than shipped
 # as a theme. Two things make it unlike every step above.
 #
@@ -2895,6 +3078,7 @@ main() {
     wanted lorerim      && install_lorerim
     wanted wotlk        && install_wotlk
     wanted livewire     && install_livewire
+    wanted musicai      && install_musicai
     wanted config       && configure_system
     wanted kderice      && install_kderice
 
@@ -2938,6 +3122,7 @@ main() {
     printf '    %sLorerimAutoinstall.AppImage%s  one-click LoreRim (Wabbajack) install\n' "$BOLD" "$RESET"
     printf '    %sWowWotlkAutoinstall.AppImage%s  one-click WoW 3.3.5a client install\n' "$BOLD" "$RESET"
     printf '    %sLivewire.AppImage%s     live GitHub telemetry board (pushes, stars, releases)\n' "$BOLD" "$RESET"
+    printf '    %sMusicAIPlayer.AppImage%s  music for long coding sessions (YouTube import, ACE-Step)\n' "$BOLD" "$RESET"
     printf '    %skderice%s               toggle the desktop rice (%skderice restore%s = stock Breeze)\n' \
         "$BOLD" "$RESET" "$BOLD" "$RESET"
     printf '    %s(or find everything in the app menu)%s\n\n' "$DIM" "$RESET"

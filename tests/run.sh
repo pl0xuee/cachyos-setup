@@ -186,6 +186,18 @@ else
     fail "livewire aborts on failed verify" "the download is chmod'd without a passing verify"
 fi
 
+if awk '/^install_musicai\(\)/,/^}/' "$SCRIPT" | grep -q 'grep -o .*_amd64.*|| true'; then
+    pass "Music AI Player asset parsing survives a no-match (|| true)"
+else
+    fail "Music AI Player asset parsing survives a no-match" \
+         "a renamed asset would exit 1 with no message instead of the intended die"
+fi
+if awk '/^install_musicai\(\)/,/^}/' "$SCRIPT" | grep -q 'verify_musicai .* || .*die'; then
+    pass "Music AI Player aborts the install on a failed verify"
+else
+    fail "Music AI Player aborts on failed verify" "the download is chmod'd without a passing verify"
+fi
+
 # `--only` with no value: `shift 2` fails, set -e exits, user sees nothing.
 out="$(bash "$SCRIPT" --only 2>&1)"; rc=$?
 [[ $rc -ne 0 ]] && pass "--only with no value exits non-zero" || fail "--only with no value exits non-zero"
@@ -267,6 +279,18 @@ for p in rust pkgconf gtk4 vte4 libadwaita gtksourceview5; do
     fi
 done
 
+# Music AI Player's importer shells out to whatever is on PATH — it doesn't
+# bundle either of these. Without them the app starts and plays fine and the
+# Import panel simply refuses, which is a silent half-install: the feature the
+# app's own README calls the reliable way to fill the library just isn't there.
+for p in yt-dlp ffmpeg; do
+    if printf '%s\n' "${real[@]}" | grep -qx "$p"; then
+        pass "pacman.txt installs $p (Music AI Player)"
+    else
+        fail "pacman.txt installs $p (Music AI Player)" "the YouTube importer refuses without it"
+    fi
+done
+
 # ── every package actually resolves in an enabled repo ────────────────────────
 group "Package names resolve (live pacman query)"
 
@@ -284,7 +308,7 @@ fi
 group "Taskbar launcher list"
 
 mapfile -t tb < <(read_list "$REPO_ROOT/packages/taskbar.txt")
-check_eq "taskbar.txt parses to 14 launchers" "14" "${#tb[@]}"
+check_eq "taskbar.txt parses to 15 launchers" "15" "${#tb[@]}"
 
 # Every entry must be a .desktop name — 'applications:' prefixes or bare app
 # names silently produce a dead tile rather than an error.
@@ -301,7 +325,7 @@ fi
 # The order IS the feature — assert it, so a careless edit that reshuffles the
 # list gets caught rather than silently rearranging the taskbar.
 check_eq "launchers are in the intended order" \
-    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop com.discripper.app.desktop com.griddown.app.desktop com.stalkergamma.gui.desktop com.lorerim.autoinstall.desktop com.wowwotlk.autoinstall.desktop livewire.desktop" \
+    "brave-origin.desktop vesktop.desktop steam.desktop org.keepassxc.KeePassXC.desktop org.kde.dolphin.desktop dev.agenttilecli.AgentTileCli.desktop com.streamhub.app.desktop com.consolevault.app.desktop com.discripper.app.desktop com.griddown.app.desktop com.stalkergamma.gui.desktop com.lorerim.autoinstall.desktop com.wowwotlk.autoinstall.desktop livewire.desktop music-ai-player.desktop" \
     "${tb[*]}"
 
 # ── KDE power settings ────────────────────────────────────────────────────────
@@ -934,6 +958,22 @@ prune_competing_launchers "com.stalkergamma.gui.desktop" >/dev/null 2>&1
     && pass "a launcher with no StartupWMClass prunes nothing" \
     || fail "a launcher with no StartupWMClass prunes nothing" "an empty class matched everything"
 
+# ...and a missing launcher must RETURN 0, not merely delete nothing. The test
+# two above only checks the latter, and this harness clears the -e and pipefail
+# it would need to see the difference: under install.sh's real flags, sed exiting
+# 2 on the missing file was handed to the assignment by pipefail and killed the
+# whole run. It fires on the dry-run path of every app (nothing writes the
+# launcher there) on any box where $APPS_DIR already exists. So assert the exit
+# status under the flags the script actually runs with, not the harness's.
+if ( set -eo pipefail
+     APPS_DIR="$prune_none"
+     prune_competing_launchers "not-installed-yet.desktop" >/dev/null 2>&1 ); then
+    pass "a missing launcher returns 0 under set -e -o pipefail"
+else
+    fail "a missing launcher returns 0 under set -e -o pipefail" \
+         "prune aborts the run instead of pruning nothing"
+fi
+
 # A stray can sit beside a perfectly good launcher, so the prune cannot live in
 # the launcher-repair branch — that only fires when ours is missing or stale.
 # It has to run on the already-installed path too, or a re-run never fixes it.
@@ -949,7 +989,7 @@ fi
 # Every app that writes a launcher prunes competitors for it, on both the
 # already-installed path and the install path — so a new app added later can't
 # quietly skip it.
-for app in streamhub consolevault discripper griddown gammagui lorerim wotlk livewire; do
+for app in streamhub consolevault discripper griddown gammagui lorerim wotlk livewire musicai; do
     app_block="$(awk "/^install_$app\\(\\)/,/^}/" "$SCRIPT")"
     n="$(grep -c 'prune_competing_launchers' <<<"$app_block")"
     if [[ "$n" -ge 2 ]]; then
@@ -1446,6 +1486,173 @@ check_contains "StartupWMClass matches the Tauri crate name" "StartupWMClass=liv
 
 if have desktop-file-validate; then
     if err="$(desktop-file-validate "$lw_desktop" 2>&1)"; then
+        pass "passes desktop-file-validate"
+    else
+        fail "passes desktop-file-validate" "$err"
+    fi
+else
+    printf '  %s·%s desktop-file-validate not installed — skipping spec validation\n' "$DIM" "$RESET"
+fi
+
+# ── Music AI Player release-API parsing ───────────────────────────────────────
+group "Music AI Player release-API parsing"
+
+# Run against a HOME that has an applications dir but none of our launchers —
+# the state of any box that has run this script before but not yet installed
+# this app. Doing it under the tester's real HOME would pass or fail depending
+# on whether they happen to have the app already, which is not a test.
+ma_home="$tmp/musicai-home"; mkdir -p "$ma_home/.local/share/applications"
+printf '[Desktop Entry]\nName=Unrelated\nExec=/usr/bin/true\n' \
+    > "$ma_home/.local/share/applications/unrelated.desktop"
+out="$(HOME="$ma_home" bash "$SCRIPT" --only musicai --dry-run 2>&1)"; rc=$?
+check_eq "--only musicai is accepted on a box without it installed" "0" "$rc"
+check_contains "the dry run reaches the end of the step" "stamp version" "$out"
+
+# The step must run before config: configure_taskbar pins music-ai-player.desktop,
+# and a launcher that doesn't exist yet is skipped with a warning, not pinned.
+ma_line="$(grep -n -m1 'wanted musicai' "$SCRIPT" | cut -d: -f1)"
+ma_cfg_line="$(grep -n -m1 'wanted config' "$SCRIPT" | cut -d: -f1)"
+if [[ -n "$ma_line" && -n "$ma_cfg_line" && "$ma_line" -lt "$ma_cfg_line" ]]; then
+    pass "Music AI Player installs before the config step pins the taskbar"
+else
+    fail "Music AI Player installs before the config step" "musicai=$ma_line config=$ma_cfg_line"
+fi
+
+ma_release="$(github_api "https://api.github.com/repos/$MUSICAI_REPO/releases/latest" 2>/dev/null)"
+if [[ -z "$ma_release" || "$ma_release" == *'"Not Found"'* ]]; then
+    fail "fetched the latest release" "empty response (rate-limited?)"
+else
+    pass "fetched the latest release"
+
+    ma_tag="$(printf '%s' "$ma_release" | grep -m1 '"tag_name"' | cut -d'"' -f4)"
+    ma_url="$(printf '%s' "$ma_release" | grep -o 'https://[^"]*_amd64\.AppImage"' | head -1 | tr -d '"')"
+
+    [[ "$ma_tag" =~ ^v[0-9]+\.[0-9]+ ]] && pass "tag parses as a version ($ma_tag)" \
+                                        || fail "tag parses as a version" "$ma_tag"
+    check_contains "asset URL ends in _amd64.AppImage" "_amd64.AppImage" "$ma_url"
+    check_contains "asset URL is a GitHub download URL" "github.com" "$ma_url"
+
+    if [[ "$ma_url" == *.sig ]]; then
+        fail "asset URL is the AppImage, not the .sig" "$ma_url"
+    else
+        pass "asset URL is the AppImage, not the .sig"
+    fi
+
+    # This release also ships a _amd64.deb (and its own .sig). The pattern must
+    # pick the AppImage out of all four, and pick exactly one — a second match
+    # would make `head -1` the thing deciding what gets installed.
+    if [[ "$ma_url" == *.deb ]]; then
+        fail "asset URL is the AppImage, not the .deb" "$ma_url"
+    else
+        pass "asset URL is the AppImage, not the .deb"
+    fi
+    # `grep -o | wc -l`, not `grep -c`: the API returns the whole release on one
+    # line, and -c counts matching LINES, so it would report 1 for any number of
+    # matches — exactly the case this test exists to catch.
+    ma_matches="$(printf '%s' "$ma_release" | grep -o 'https://[^"]*_amd64\.AppImage"' | wc -l)"
+    check_eq "exactly one asset URL matches the pattern" "1" "$ma_matches"
+
+    code="$(curl -sIL -o /dev/null -w '%{http_code}' "$ma_url" 2>/dev/null)"
+    check_eq "asset URL is reachable (HTTP 200)" "200" "$code"
+fi
+
+# ── Music AI Player signature verification ────────────────────────────────────
+group "Music AI Player signature verification"
+
+if grep -qF 'verify_musicai "$tmp" "$url" ||' "$SCRIPT"; then
+    pass "download is verified before chmod +x"
+else
+    fail "download is verified before chmod +x" "the AppImage would be run unverified"
+fi
+
+if awk '/^verify_musicai\(\)/,/^}/' "$SCRIPT" | grep -q 'return 1'; then
+    pass "an unverifiable signature aborts rather than warning"
+else
+    fail "an unverifiable signature aborts rather than warning"
+fi
+
+# The key is embedded, never pulled off the wire from the host it vouches for.
+if awk '/^verify_musicai\(\)/,/^}/' "$SCRIPT" | grep -qi 'pubkey.*curl\|curl.*pubkey\|tauri.conf'; then
+    fail "public key is embedded, not fetched at runtime"
+else
+    pass "public key is embedded, not fetched at runtime"
+fi
+
+# The pubkey in install.sh must match what the app actually ships in its Tauri
+# config (stored there as base64 of the whole minisign key file). A drift here
+# means every download would fail verification — catch it at test time.
+ma_conf="$(curl -fsSL "https://raw.githubusercontent.com/$MUSICAI_REPO/$MUSICAI_BRANCH/src-tauri/tauri.conf.json" 2>/dev/null || true)"
+if [[ -n "$ma_conf" ]]; then
+    ma_conf_key="$(printf '%s' "$ma_conf" | grep -m1 '"pubkey"' | cut -d'"' -f4 | base64 -d 2>/dev/null | tail -1 || true)"
+    if [[ -n "$ma_conf_key" ]]; then
+        check_eq "embedded pubkey matches the app's tauri.conf.json" "$ma_conf_key" "$MUSICAI_PUBKEY"
+    else
+        printf '  %s·%s couldn'\''t decode the pubkey from tauri.conf.json — skipping\n' "$DIM" "$RESET"
+    fi
+else
+    printf '  %s·%s couldn'\''t fetch tauri.conf.json — skipping pubkey cross-check\n' "$DIM" "$RESET"
+fi
+
+# And prove the real release verifies against the embedded key. Tauri v2 signs
+# the AppImage itself here (not a .tar.gz of it), which is what makes verifying
+# the downloaded file directly the right check.
+if have minisign && [[ -n "${ma_tag:-}" && -n "${ma_url:-}" ]]; then
+    mad="$(mktemp -d)"
+    if curl -fsSL "$ma_url" -o "$mad/app.AppImage" 2>/dev/null \
+       && curl -fsSL "$ma_url.sig" 2>/dev/null | base64 -d > "$mad/app.AppImage.minisig" 2>/dev/null; then
+        if minisign -Vm "$mad/app.AppImage" -x "$mad/app.AppImage.minisig" -P "$MUSICAI_PUBKEY" >/dev/null 2>&1; then
+            pass "real release verifies against the embedded public key"
+        else
+            fail "real release verifies against the embedded public key" "minisign rejected it"
+        fi
+    else
+        printf '  %s·%s couldn'\''t download the release — skipping live verify\n' "$DIM" "$RESET"
+    fi
+    rm -rf "$mad"
+else
+    printf '  %s·%s minisign missing or no release — skipping live signature check\n' "$DIM" "$RESET"
+fi
+
+# The icon is fetched off the default branch, which is master here, not main —
+# a wrong branch is a 404 and a launcher with no icon, warned about but installed.
+ma_icon="https://raw.githubusercontent.com/$MUSICAI_REPO/$MUSICAI_BRANCH/src-tauri/icons/icon.png"
+code="$(curl -sIL -o /dev/null -w '%{http_code}' "$ma_icon" 2>/dev/null)"
+check_eq "icon URL is reachable on the app's default branch (HTTP 200)" "200" "$code"
+
+# ── Music AI Player .desktop file ─────────────────────────────────────────────
+group "Music AI Player .desktop file"
+
+APPS_DIR="$tmp"
+MUSICAI_APPIMAGE="/home/user/.local/bin/MusicAIPlayer.AppImage"
+MUSICAI_DIR="/home/user/.local/share/music-ai-player"
+write_musicai_desktop
+
+# Same contract as livewire's: on Wayland the compositor matches the running
+# window to a .desktop named for its app-id, which Tauri takes from the crate
+# name — so this file cannot be renamed to the com.<app>.app form without
+# leaving the running window a generic icon.
+ma_desktop="$tmp/music-ai-player.desktop"
+[[ -f "$ma_desktop" ]] && pass ".desktop file is written, named for the Wayland app-id" \
+                       || fail ".desktop file is written, named for the Wayland app-id"
+ma_content="$(cat "$ma_desktop" 2>/dev/null || true)"
+
+check_contains "has [Desktop Entry] header" "[Desktop Entry]" "$ma_content"
+check_contains "Exec points at the AppImage" "Exec=$MUSICAI_APPIMAGE" "$ma_content"
+check_contains "Icon uses an absolute path"  "Icon=$MUSICAI_DIR/icon.png" "$ma_content"
+check_contains "Type=Application" "Type=Application" "$ma_content"
+check_contains "StartupWMClass matches the Tauri crate name" "StartupWMClass=music-ai-player" "$ma_content"
+
+# The name pinned in taskbar.txt has to be the name actually written, or the
+# taskbar step skips the tile with a warning.
+if grep -qx 'music-ai-player.desktop' <(read_list "$REPO_ROOT/packages/taskbar.txt"); then
+    pass "the pinned launcher name matches the file that gets written"
+else
+    fail "the pinned launcher name matches the file that gets written" \
+         "taskbar.txt pins a name write_musicai_desktop never creates"
+fi
+
+if have desktop-file-validate; then
+    if err="$(desktop-file-validate "$ma_desktop" 2>&1)"; then
         pass "passes desktop-file-validate"
     else
         fail "passes desktop-file-validate" "$err"

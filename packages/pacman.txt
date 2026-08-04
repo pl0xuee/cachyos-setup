@@ -45,7 +45,16 @@ gtksourceview5               # AgentTileCLI: the sidebar's file editor
 nodejs                       # StreamHub (only if building from source)
 npm
 fuse2                        # StreamHub + ConsoleVault: AppImages need libfuse.so.2
-minisign                     # verifies ConsoleVault's signed AppImage before it runs
+minisign                     # verifies ConsoleVault's + Music AI Player's signed AppImages
+
+# ── Music AI Player ───────────────────────────────────────────────────
+# The player itself bundles everything it needs; these two are for its YouTube
+# importer, which shells out to whatever is on PATH. Without them the app still
+# starts and plays — the Import panel just refuses with "yt-dlp is not
+# installed". ffmpeg is what yt-dlp extracts audio with, and ffprobe (same
+# package) is what measures each track's real duration for the crossfade.
+yt-dlp                       # Music AI Player: YouTube import
+ffmpeg                       # Music AI Player: yt-dlp's audio extraction + ffprobe
 
 # ── KDE rice (kderice) ────────────────────────────────────────────────
 # Wallpapers are generated, not shipped: 51 terrain variants rendered at
