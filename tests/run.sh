@@ -55,13 +55,6 @@ check_contains "unknown option names the culprit" "--bogus" "$out"
 out="$(bash "$SCRIPT" --only nonsense 2>&1)"; rc=$?
 [[ $rc -ne 0 ]] && pass "--only rejects an invalid step" || fail "--only rejects an invalid step" "exit $rc"
 
-out="$(bash "$SCRIPT" --only kderice --dry-run 2>&1)"; rc=$?
-check_eq "--only kderice is accepted" "0" "$rc"
-check_contains "--only error text names kderice" "kderice" \
-    "$(bash "$SCRIPT" --only nonsense 2>&1)"
-check_contains "--help documents the kderice step" "kderice" \
-    "$(bash "$SCRIPT" --help 2>&1)"
-
 # ── set -e footguns ───────────────────────────────────────────────────────────
 group "set -e cannot silently kill the run"
 
@@ -253,16 +246,14 @@ if [[ ${#fp[@]} -gt 0 ]]; then
     fi
 fi
 
-# kderice generates its wallpapers with numpy+Pillow, renders them as WebP that
-# Qt can only read through qt6-imageformats, refuses to apply without Fira Mono,
-# installs them with rsync, and is gated on kscreen-doctor's view of the
-# monitors. A missing one of these fails inside kderice, where the error is
-# much harder to read than it is here.
-for p in python-numpy python-pillow ttf-fira-mono qt6-imageformats kscreen rsync; do
+# These three arrived with the desktop-rice step and were kept after it was
+# removed: rsync and kscreen are generally useful, and without qt6-imageformats
+# Qt cannot open WebP at all, which shows up as a black desktop and no error.
+for p in rsync kscreen qt6-imageformats; do
     if printf '%s\n' "${real[@]}" | grep -qx "$p"; then
-        pass "pacman.txt installs $p (kderice)"
+        pass "pacman.txt installs $p"
     else
-        fail "pacman.txt installs $p (kderice)" "kderice needs it"
+        fail "pacman.txt installs $p" "listed under General desktop"
     fi
 done
 
@@ -1686,7 +1677,6 @@ check_eq "--dry-run creates no files in HOME" "$before" "$after"
 check_contains "--dry-run announces itself" "DRY RUN" "$out"
 check_contains "--dry-run would install packages" "[dry-run] sudo pacman -S --needed" "$out"
 check_contains "--dry-run would clone AgentTileCLI" "[dry-run] git clone" "$out"
-check_contains "--dry-run would build the rice" "generate/build.py" "$out"
 check_contains "--dry-run never invokes sudo" "no sudo needed" "$out"
 
 # A dry run must not leave a half-downloaded AppImage anywhere.
@@ -1697,248 +1687,6 @@ if [[ -e "$fake_home/.local/bin/StreamHub.AppImage" || -e "$fake_home/.local/bin
     fail "--dry-run downloads no AppImage"
 else
     pass "--dry-run downloads no AppImage"
-fi
-
-# ── KDE Rice ──────────────────────────────────────────────────────────────────
-group "KDE Rice"
-
-# Cloning must follow the AgentTileCLI pattern exactly: fast-forward only, so a
-# dev branch or uncommitted work in the clone is never clobbered.
-if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -q 'git -C .* pull --ff-only'; then
-    pass "kderice pulls fast-forward-only"
-else
-    fail "kderice pulls fast-forward-only" "a plain pull could clobber local work"
-fi
-
-# The step runs after configure_system: configure_taskbar rewrites the panel and
-# restarts plasmashell, and kderice must snapshot the panel this script wrote.
-kd_line="$(grep -n -m1 'wanted kderice' "$SCRIPT" | cut -d: -f1)"
-cfg_line="$(grep -n -m1 'wanted config' "$SCRIPT" | cut -d: -f1)"
-if [[ -n "$kd_line" && -n "$cfg_line" && "$kd_line" -gt "$cfg_line" ]]; then
-    pass "kderice runs after the config step"
-else
-    fail "kderice runs after the config step" "kderice=$kd_line config=$cfg_line"
-fi
-
-# Nothing in this step may be fatal — config has already run by then, and a rice
-# that wouldn't apply shouldn't cost the user the rest of a working setup.
-if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -qE '\bdie\b'; then
-    fail "kderice never calls die" "a failed rice would abort the whole run"
-else
-    pass "kderice never calls die"
-fi
-
-# `run mkdir -p "$PROJECTS_DIR"` is a bare statement, not the last command of an
-# && list — but set -e does not forgive an unguarded failure anywhere else
-# either. An unwritable $PROJECTS_DIR (or a plain file sitting at that path)
-# must not take the whole run down after configure_system has already finished.
-if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -qF 'run mkdir -p "$PROJECTS_DIR" || {'; then
-    pass "a failed mkdir doesn't abort the run"
-else
-    fail "a failed mkdir doesn't abort the run" \
-         "run mkdir -p \"\$PROJECTS_DIR\" must be guarded; set -e kills the run otherwise"
-fi
-
-# kderice setup can sudo for the font when it's absent, and require_tty would
-# then stop and wait. Stdin closed means it can never block an unattended run.
-#
-# Excludes lines that start with `run "(cd` — the DRY_RUN print block's copy of
-# this same text — so this only goes green off the REAL invocation. Grepping the
-# whole function (as before) was a permanent false green: dropping `< /dev/null`
-# from the real call left the print string to satisfy it anyway.
-if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -Ev '^\s*run "\(cd' | grep -qF 'bin/kderice setup < /dev/null'; then
-    pass "kderice setup is run with stdin closed"
-else
-    fail "kderice setup is run with stdin closed" "only the dry-run print block has it, or it's missing"
-fi
-
-# Same hazard, same fix, for the two Python steps that precede setup: neither
-# guards its own stdin, and generate/wallpaper.py runs for ~90s.
-if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -qF 'python3 generate/build.py < /dev/null'; then
-    pass "generate/build.py is run with stdin closed"
-else
-    fail "generate/build.py is run with stdin closed"
-fi
-if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -qF 'python3 generate/wallpaper.py < /dev/null'; then
-    pass "generate/wallpaper.py is run with stdin closed"
-else
-    fail "generate/wallpaper.py is run with stdin closed"
-fi
-
-# apply doesn't prompt today (no sudo, no interactive read in do_apply) — but
-# the same DRY_RUN-print collision applies here too, so this is held to the
-# same standard rather than left as the one uncovered invocation in the step.
-if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" | grep -Ev '^\s*run "\(cd' | grep -qF 'bin/kderice apply < /dev/null'; then
-    pass "kderice apply is run with stdin closed"
-else
-    fail "kderice apply is run with stdin closed" "only the dry-run print block has it, or it's missing"
-fi
-
-kd="$tmp/kderice"; mkdir -p "$kd/build/wallpapers"
-
-# This step must not read ANY key out of kderice's palette.toml.
-#
-# It used to read [wallpaper].variants, to decide whether the wallpapers were
-# already generated. kderice 0.2.0 deleted that key — one image per monitor, so
-# there is no variant count — and because the parse was piped to /dev/null the
-# KeyError surfaced only as "couldn't read [wallpaper] out of palette.toml —
-# skipping the rice". A whole step silently disabled by a key rename in another
-# repo.
-#
-# The rule that prevents a repeat is the same one kderice_geometry_ok already
-# follows: ask kderice, never re-implement its file formats here. palette.toml
-# may appear in comments and in advice printed to the user; it must never be
-# parsed.
-if grep -n 'palette\.toml' "$SCRIPT" | grep -vE '^\s*[0-9]+:\s*#' | grep -qE 'tomllib|json\.load|grep |awk |sed |read -r'; then
-    fail "install.sh parses no keys out of kderice's palette.toml" \
-         "a parse would break again the next time kderice renames a key"
-else
-    pass "install.sh parses no keys out of kderice's palette.toml"
-fi
-
-# The helpers that did the parsing are gone, not merely unused — a dangling
-# definition invites a future caller.
-if grep -qE 'kderice_(expected_slides|have_slides)' "$SCRIPT"; then
-    fail "the slide-count helpers are gone" "kderice_expected_slides/have_slides still defined or called"
-else
-    pass "the slide-count helpers are gone"
-fi
-
-# Wallpaper generation is unconditional. There is no skip-if-present cache, and
-# reinstating one would be a bug rather than an optimisation: kderice reads its
-# resolutions from kscreen at generate time, so a machine that gained, lost or
-# rotated a monitor MUST re-render, and a cache keyed on files already being
-# there is exactly what would stop it. At ~9s it also saves nothing worth having.
-if awk '/^install_kderice\(\)/,/^}/' "$SCRIPT" \
-     | grep -Ev '^\s*(#|run "\(cd)' | grep -qiE 'already generated|have_slides'; then
-    fail "wallpaper generation is unconditional" "a skip-if-present cache is back"
-else
-    pass "wallpaper generation is unconditional"
-fi
-
-# check_geometry.py has no generate/ under $kd, so python3 exits 2 for "no such
-# file" on EVERY call below regardless of whether the guard being tested is
-# even present — `&& fail || pass` would then report pass either way. This stub
-# stands in for the real checker (always "matches") so these assertions are
-# actually exercising kderice_geometry_ok's own guard, not a missing file.
-mkdir -p "$kd/generate"
-printf 'import sys; sys.exit(0)\n' > "$kd/generate/check_geometry.py"
-
-# check_geometry.py returns 0 on empty stdin — correct for a status command,
-# wrong for a gate. No geometry means we don't know, and not knowing must not
-# apply a rice pinned to three specific monitors.
-kderice_geometry_ok "$kd" "$kd/build/wallpapers" "" >/dev/null 2>&1 \
-    && fail "no kscreen output fails the geometry gate" "an unknown layout would be riced" \
-    || pass "no kscreen output fails the geometry gate"
-
-kderice_geometry_ok "$kd" "$kd/build/wallpapers" "   " >/dev/null 2>&1 \
-    && fail "whitespace-only kscreen output fails the gate" \
-    || pass "whitespace-only kscreen output fails the gate"
-
-# Spaces aren't the only whitespace Python's own .strip() reduces to empty — a
-# tab or a bare newline gets there too, and a guard written as ${json// /}
-# (spaces only) would miss both.
-kderice_geometry_ok "$kd" "$kd/build/wallpapers" "$(printf '\t\n')" >/dev/null 2>&1 \
-    && fail "tab/newline-only kscreen output fails the gate" \
-         "a space-only guard would have let this through" \
-    || pass "tab/newline-only kscreen output fails the gate"
-
-# check_geometry.py's OTHER "I could not tell" case: non-empty stdin that still
-# isn't valid JSON — a backend diagnostic or a truncated dump ahead of the real
-# output, say. The checker answers 0 for this too, so the gate has to catch it
-# before ever trusting the checker's verdict.
-kderice_geometry_ok "$kd" "$kd/build/wallpapers" "not json at all" >/dev/null 2>&1 \
-    && fail "unparseable kscreen output fails the geometry gate" \
-         "check_geometry.py answers 0 for text it can't parse — the gate must not trust that" \
-    || pass "unparseable kscreen output fails the geometry gate"
-
-# The gate must consult kderice's own checker, not a reimplementation of it that
-# would drift the moment palette.toml grows a field.
-if awk '/^kderice_geometry_ok\(\)/,/^}/' "$SCRIPT" | grep -q 'check_geometry.py'; then
-    pass "the gate calls kderice's own check_geometry.py"
-else
-    fail "the gate calls kderice's own check_geometry.py" "don't reimplement it in bash"
-fi
-
-# It must be pointed at build/wallpapers, not the installed directory: the gate
-# runs BEFORE apply, and apply is what populates ~/.local/share/wallpapers.
-if awk '/install_kderice\(\)/,/^}/' "$SCRIPT" | grep -q 'kderice_geometry_ok .*build/wallpapers'; then
-    pass "the gate checks build/wallpapers, not the installed dir"
-else
-    fail "the gate checks build/wallpapers, not the installed dir" \
-         "the installed dir is empty until apply runs, so the gate would always fail"
-fi
-
-# kderice_geometry_ok's own guard is unit-tested above, but the call site feeds
-# it — kscreen-doctor's own exit status has to reach that guard as a failure, or
-# a FAILING kscreen-doctor that still printed something non-JSON (never
-# checked) looks identical to a successful one. `2>/dev/null || true` (the
-# original call site) discards it outright.
-if awk '/install_kderice\(\)/,/^}/' "$SCRIPT" | grep -qF '$geom_rc -ne 0'; then
-    pass "kscreen-doctor's exit status reaches the gate"
-else
-    fail "kscreen-doctor's exit status reaches the gate" \
-         "a failing kscreen-doctor with non-empty, non-JSON stdout would look successful"
-fi
-
-# setup, the gate, and apply, in that order. Matched on the REAL invocations'
-# exact text, not a loose substring: the DRY_RUN branch prints its own copy of
-# all three ('run "(cd ...'), and the gate's own advice to the user also
-# contains the words "bin/kderice apply" ('(cd $dir && ... && ./bin/kderice
-# apply)', no space after the opening paren, no `< /dev/null`) — either
-# collision would let a DELETED real call still appear to run in order.
-kd_body="$(awk '/^install_kderice\(\)/,/^}/' "$SCRIPT")"
-kd_real="$(grep -Ev '^\s*run "\(cd' <<<"$kd_body")"
-kd_setup="$(grep -nF '( cd "$dir" && ./bin/kderice setup < /dev/null )' <<<"$kd_real" | tail -1 | cut -d: -f1)"
-kd_gate="$(grep -n 'kderice_geometry_ok' <<<"$kd_real" | tail -1 | cut -d: -f1)"
-kd_apply="$(grep -nF '( cd "$dir" && ./bin/kderice apply < /dev/null )' <<<"$kd_real" | tail -1 | cut -d: -f1)"
-
-# setup runs whether or not the gate passed. A machine the rice can't be applied
-# to still gets the KDE Rice launcher, so it can be applied by hand once
-# palette.toml is fixed — that's the whole point of gating apply rather than the
-# step.
-if [[ -n "$kd_setup" && -n "$kd_gate" && "$kd_setup" -lt "$kd_gate" ]]; then
-    pass "kderice setup runs before the apply gate is consulted"
-else
-    fail "kderice setup runs before the apply gate is consulted" \
-         "setup=$kd_setup gate=$kd_gate — a mismatched machine would get no launcher"
-fi
-
-# And apply must never run ahead of the gate that's supposed to reject it.
-if [[ -n "$kd_gate" && -n "$kd_apply" && "$kd_gate" -lt "$kd_apply" ]]; then
-    pass "kderice apply runs after the geometry gate is consulted"
-else
-    fail "kderice apply runs after the geometry gate is consulted" \
-         "gate=$kd_gate apply=$kd_apply — apply could run before a mismatched machine is rejected"
-fi
-
-# The next two used to grep the WHOLE function body, which Tasks 3-5 already
-# satisfy on their own — every early SKIPPED path reports, and the gate's own
-# rejection already warns "NOT applied" — so reverting all of Task 6 left both
-# green. Restricted to the region that runs only once the gate's own if/fi has
-# closed (i.e. the gate PASSED), so they can only go green because of the apply
-# block Task 6 added.
-kd_post_gate="$(awk '
-    /kderice_geometry_ok/ { ingate = 1; next }
-    ingate && /^[[:space:]]*fi[[:space:]]*$/ { ingate = 0; post = 1; next }
-    post { print }
-' <<<"$kd_body")"
-
-# Whatever happens once the gate has passed, the run must say so in the closing
-# report.
-if grep -qE 'report "KDE Rice"' <<<"$kd_post_gate"; then
-    pass "the step reports its outcome"
-else
-    fail "the step reports its outcome" "no report call runs once the gate has passed"
-fi
-
-# A failed apply is the one outcome a user would otherwise not notice — the
-# desktop is simply unchanged, the same reasoning behind the gate's own
-# rejection warning above. This is apply's own version of it.
-if grep -q 'warn ' <<<"$kd_post_gate"; then
-    pass "a failed apply is warned about, not reported silently"
-else
-    fail "a failed apply is warned about, not reported silently"
 fi
 
 # ── summary ───────────────────────────────────────────────────────────────────

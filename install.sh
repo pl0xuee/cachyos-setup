@@ -154,16 +154,6 @@ MUSICAI_BRANCH="master"
 # as the others: a key fetched from the release it vouches for proves nothing.
 MUSICAI_PUBKEY="RWQAo9xTlRVM+fTKa7sSVc0P+nIEuLCEDbEOtfEK10uMzI0sbx7BAO/S"
 
-# kderice — "Gunmetal Filament", a reversible KDE Plasma 6 rice. Not an app but a
-# set of edits to the desktop's own config, generated from a single palette file.
-#
-# Cloned to a permanent path beside the agenttilecli clone, which is what its own
-# README assumes (it refers to ../agenttilecli, and derives its palette from that
-# app's design system). The clone is also where the rice is re-applied from, so a
-# temp dir would not do.
-KDERICE_REPO="https://github.com/pl0xuee/kderice.git"
-KDERICE_DIR="$PROJECTS_DIR/kderice"
-
 # CPU power profile. power-profiles-daemon forgets this on reboot, so the config
 # step also installs a user service that reapplies it at login.
 POWER_PROFILE="performance"
@@ -376,7 +366,7 @@ Options:
   --only STEP     Run one step only:
                     packages | flatpak | agenttilecli | streamhub | consolevault
                     discripper | griddown | gammagui | lorerim | wotlk
-                    livewire | musicai | config | kderice
+                    livewire | musicai | config
   --skip-upgrade  Don't run 'pacman -Syu' first (not recommended — see below)
   -h, --help      This message
 
@@ -392,7 +382,7 @@ Notes:
   only if you just upgraded.
 
 Env:
-  PROJECTS_DIR    Where to clone AgentTileCLI and kderice
+  PROJECTS_DIR    Where to clone AgentTileCLI
                   (default: ~/Documents/Projects)
 EOF
 }
@@ -403,7 +393,7 @@ while [[ $# -gt 0 ]]; do
         # Guard the arg count first: `shift 2` with only one argument left
         # returns non-zero, and set -e would then exit silently — no usage, no
         # error, nothing. `./install.sh --only` would just print nothing and fail.
-        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | gammagui | lorerim | wotlk | livewire | musicai | config | kderice)"
+        --only)         [[ $# -ge 2 ]] || die "--only needs a step (packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | gammagui | lorerim | wotlk | livewire | musicai | config)"
                         ONLY="$2"; shift 2 ;;
         --skip-upgrade) SKIP_UPGRADE=1; shift ;;
         -h|--help)      usage; exit 0 ;;
@@ -413,8 +403,8 @@ done
 
 if [[ -n "$ONLY" ]]; then
     case "$ONLY" in
-        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|griddown|gammagui|lorerim|wotlk|livewire|musicai|config|kderice) ;;
-        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | gammagui | lorerim | wotlk | livewire | musicai | config | kderice" ;;
+        packages|flatpak|agenttilecli|streamhub|consolevault|discripper|griddown|gammagui|lorerim|wotlk|livewire|musicai|config) ;;
+        *) die "--only takes: packages | flatpak | agenttilecli | streamhub | consolevault | discripper | griddown | gammagui | lorerim | wotlk | livewire | musicai | config" ;;
     esac
 fi
 wanted() { [[ -z "$ONLY" || "$ONLY" == "$1" ]]; }
@@ -2839,225 +2829,6 @@ ensure_path() {
     return 0
 }
 
-# There is deliberately no "are the wallpapers already generated?" cache here.
-#
-# There used to be: kderice rendered 51 terrain variants at every resolution —
-# 153 files, ~590 MB, ~90 seconds — so re-running install.sh had to be able to
-# skip it. That cache read [wallpaper].variants out of palette.toml and counted
-# files in per-resolution directories.
-#
-# kderice 0.2.0 renders ONE wallpaper per monitor, measured from the live
-# session: 3 files, ~12 MB, ~9 seconds. Both halves of the cache stopped being
-# right at once. `variants` no longer exists, so the parse raised KeyError into
-# /dev/null and the step reported "couldn't read [wallpaper] out of
-# palette.toml — skipping the rice"; and the per-resolution directories it
-# counted are gone.
-#
-# It is not re-implemented against the new layout because at ~9 seconds the
-# cache costs more than it saves, and because caching is now actively WRONG:
-# kderice picks its resolutions up from kscreen at generate time, so plugging in
-# a different monitor SHOULD re-render. A cache keyed on files already present
-# is exactly what would stop that. Regenerating unconditionally is both simpler
-# and the only version that keeps working when the hardware changes.
-
-# Does this machine look like the one palette.toml was written for?
-#
-# palette.toml pins three monitors by name, resolution, scale AND the Plasma
-# containment id each one owns. Applying against a different layout points the
-# slideshow at containments that don't exist — the desktop looks fine and the
-# wallpaper is simply wrong, which is the failure mode kderice wrote this checker
-# to catch in the first place. So the checker is called, never reimplemented:
-# a bash copy would drift the moment palette.toml grows a field.
-#
-# Pointed at build/wallpapers rather than the checker's default
-# ~/.local/share/wallpapers/gunmetal, because this runs BEFORE apply and apply is
-# what populates that directory.
-#
-# check_geometry.py answers 0 — "matches" — for BOTH empty stdin AND stdin that
-# fails to parse as JSON: right for a status command ("I could not tell"), wrong
-# for a gate, where not knowing must not rice a machine. Neither case is left to
-# the checker, so both are caught here first:
-#   - whitespace-only input (spaces, tabs OR newlines — anything Python's own
-#     .strip() would reduce to empty) is rejected outright;
-#   - anything else has to parse as JSON before the checker's verdict is
-#     trusted, since a backend diagnostic or a truncated dump on stdout is
-#     non-empty but tells us nothing about the monitors either.
-kderice_geometry_ok() {
-    local proj="$1" walls="$2" json="$3"
-    [[ -n "${json//[[:space:]]/}" ]] || return 1
-    printf '%s' "$json" | python3 -c 'import json, sys; json.load(sys.stdin)' 2>/dev/null || return 1
-    printf '%s' "$json" | python3 "$proj/generate/check_geometry.py" "$walls"
-}
-
-# Everything kderice needs from the repos, checked before it can fail deep inside
-# a Python traceback or a `die` in its own preflight.
-#
-# These are all in packages/pacman.txt, so a normal run has them already — but
-# `--only kderice` can reach here without the packages step, which is the same
-# reason verify_griddown pulls in minisign rather than failing.
-kderice_deps() {
-    local -a missing=()
-
-    python3 -c 'import numpy, PIL' 2>/dev/null || missing+=(python-numpy python-pillow)
-    have rsync          || missing+=(rsync)
-    have kscreen-doctor || missing+=(kscreen)
-    # fc-match always answers with SOMETHING — it falls back to a default font
-    # rather than failing — so the answer has to be inspected, not just its
-    # exit status. kderice's own preflight does exactly this.
-    [[ "$(fc-match --format='%{file}' 'Fira Mono' 2>/dev/null)" == *FiraMono* ]] \
-        || missing+=(ttf-fira-mono)
-    # No binary to probe for: this is a Qt image plugin, so its absence shows up
-    # as a black desktop, not a missing command.
-    pacman -Qq qt6-imageformats >/dev/null 2>&1 || missing+=(qt6-imageformats)
-
-    [[ ${#missing[@]} -eq 0 ]] && return 0
-
-    info "Installing kderice's dependencies (${missing[*]})..."
-    run sudo pacman -S --needed --noconfirm "${missing[@]}" && return 0
-
-    warn "couldn't install ${missing[*]} — skipping the rice"
-    return 1
-}
-
-# ── 14. KDE Rice (Gunmetal Filament) ──────────────────────────────────────────
-# A reversible Plasma 6 rice, generated from a palette file rather than shipped
-# as a theme. Two things make it unlike every step above.
-#
-# It is partly machine-specific by construction. Since kderice 0.2.0 the monitor
-# geometry is measured from kscreen, so resolutions and output names port freely
-# — but palette.toml still pins the Plasma containment id each desktop owns
-# (43/44/45, ids Plasma assigned on one particular box), and those are NOT
-# discoverable from kscreen. On a box whose desktop containments are numbered
-# differently the wallpaper keys are written to containments that don't exist:
-# colours and panel land, wallpapers silently don't. So applying is gated on
-# kderice's own check_geometry.py, and a machine that doesn't match still gets
-# the launcher.
-#
-# And it runs LAST, after configure_system. configure_taskbar rewrites the
-# panel's applet list and restarts plasmashell; kderice's README names re-applying
-# afterwards as the supported order. The two own disjoint keys — kderice never
-# writes launchers, AppletOrder or hiddenItems — so nothing is lost either way,
-# but the snapshot apply takes should be of the panel this script just wrote.
-install_kderice() {
-    step "KDE Rice"
-
-    kderice_deps || { report "KDE Rice" "SKIPPED (missing dependencies)"; return 0; }
-
-    local dir="$KDERICE_DIR"
-    # A bare statement, not the last command of an && list — but set -e does not
-    # forgive an unguarded failure ANYWHERE, only the ones inside a conditional.
-    # An unwritable $PROJECTS_DIR (or a plain file already sitting at that path)
-    # would otherwise abort the whole run here, after configure_system has
-    # already finished, with no summary and no warning.
-    run mkdir -p "$PROJECTS_DIR" || {
-        warn "couldn't create $PROJECTS_DIR — skipping the rice"
-        report "KDE Rice" "SKIPPED (couldn't create $PROJECTS_DIR)"
-        return 0
-    }
-
-    if [[ -d "$dir/.git" ]]; then
-        info "Clone exists — pulling latest..."
-        # Fast-forward only, same as AgentTileCLI: local commits, a dev branch or
-        # uncommitted palette edits make this refuse rather than clobber them.
-        if ! run git -C "$dir" pull --ff-only; then
-            warn "couldn't fast-forward $dir (local changes or a dev branch?) — using what's already there"
-        fi
-    else
-        info "Cloning into $dir..."
-        if ! run git clone "$KDERICE_REPO" "$dir"; then
-            warn "couldn't clone kderice — skipping the rice"
-            report "KDE Rice" "SKIPPED (clone failed)"
-            return 0
-        fi
-    fi
-
-    # Everything past here reads files out of the clone, and on a dry run there
-    # isn't one — `run git clone` only printed what it would have done.
-    if [[ $DRY_RUN -eq 1 ]]; then
-        run "(cd $dir && python3 generate/build.py)"
-        run "(cd $dir && python3 generate/wallpaper.py)  # one per connected monitor"
-        run "(cd $dir && ./bin/kderice setup < /dev/null)"
-        run "(cd $dir && ./bin/kderice apply)            # only when check_geometry.py passes"
-        report "KDE Rice" "would clone, build and apply"
-        return 0
-    fi
-
-    info "Building the palette..."
-    # build.py asserts WCAG contrast, so a bad colour edit fails here rather than
-    # on screen. It's fast — no reason to ever skip it.
-    if ! ( cd "$dir" && python3 generate/build.py < /dev/null ); then
-        warn "kderice build failed — skipping the rice"
-        report "KDE Rice" "SKIPPED (build failed)"
-        return 0
-    fi
-
-    # One wallpaper per connected monitor, at that monitor's own resolution, which
-    # kderice reads from kscreen itself — so nothing here has to know or declare
-    # what this machine's screens are. See the note above kderice_geometry_ok for
-    # why there is no skip-if-present cache.
-    info "Generating one wallpaper per monitor — about 9s and ~12 MB..."
-    if ! ( cd "$dir" && python3 generate/wallpaper.py < /dev/null ); then
-        warn "wallpaper generation failed — skipping the rice"
-        report "KDE Rice" "SKIPPED (wallpaper generation failed)"
-        return 0
-    fi
-    ok "wallpapers generated"
-
-    # Links kderice and kderice-launch into ~/.local/bin and installs the
-    # KDE Rice launcher entry and icon.
-    #
-    # Before the gate, and unconditional: a machine the rice can't be applied to
-    # still gets the toggle, so it can be riced by hand once palette.toml is
-    # fixed. Gating apply is the point; gating the install would leave nothing.
-    #
-    # Stdin closed: setup sudos for the font when it's missing, and its
-    # require_tty would otherwise stop and wait forever in an unattended run.
-    # ttf-fira-mono is in packages/pacman.txt and kderice_deps re-checks it, so
-    # in practice nothing here prompts at all.
-    if ! ( cd "$dir" && ./bin/kderice setup < /dev/null ); then
-        warn "kderice setup failed — skipping the rice"
-        report "KDE Rice" "SKIPPED (setup failed)"
-        return 0
-    fi
-    ok "kderice linked into $BIN_DIR, KDE Rice launcher installed"
-
-    local commit; commit="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-
-    # kscreen-doctor's own exit status has to survive to the gate, not just its
-    # stdout: a bare `|| true` here would make a FAILING kscreen-doctor that
-    # still printed something (a backend diagnostic, a partial dump — none of it
-    # JSON) indistinguishable from a successful one, and that something is
-    # exactly the "we don't know" input the gate exists to reject. Written as
-    # the test of an `if` so a `have` or `kscreen-doctor` failure can't trip
-    # errexit either way — set -e forgives every command in a && list that's
-    # part of an `if`'s test, not just the ones before the final `&&`.
-    local geom="" geom_rc=1
-    if have kscreen-doctor && geom="$(kscreen-doctor -j 2>/dev/null)"; then
-        geom_rc=0
-    fi
-    if [[ $geom_rc -ne 0 ]] || ! kderice_geometry_ok "$dir" "$dir/build/wallpapers" "$geom"; then
-        warn "this machine's monitors don't match kderice's palette.toml — the rice was built and the launcher installed, but NOT applied"
-        warn "fix [wallpaper].sizes in $dir/palette.toml, then: (cd $dir && python3 generate/wallpaper.py && ./bin/kderice apply)"
-        report "KDE Rice" "built ($commit), NOT applied — monitor layout doesn't match palette.toml"
-        return 0
-    fi
-
-    # apply stops and restarts plasmashell itself, through the systemd user unit.
-    # Safe here because configure_taskbar has already finished with the panel.
-    # Stdin closed for the same reason as setup: do_apply prompts for nothing
-    # today (no sudo, no interactive read), but holding the invariant here too
-    # means a future kderice that does prompt still can't hang an unattended run.
-    info "Applying — plasmashell restarts, so the desktop will flicker..."
-    if ( cd "$dir" && ./bin/kderice apply < /dev/null ); then
-        ok "Gunmetal Filament applied"
-        report "KDE Rice" "applied ($commit) — 'kderice restore' puts stock Breeze back"
-    else
-        warn "kderice apply failed — the desktop is unchanged; run 'kderice status' to see why"
-        report "KDE Rice" "built ($commit), apply FAILED — try 'kderice status'"
-    fi
-    return 0
-}
-
 # ── run ───────────────────────────────────────────────────────────────────────
 main() {
     banner
@@ -3080,7 +2851,6 @@ main() {
     wanted livewire     && install_livewire
     wanted musicai      && install_musicai
     wanted config       && configure_system
-    wanted kderice      && install_kderice
 
     if [[ $DRY_RUN -eq 1 ]]; then
         box "$BOLD$YELLOW" \
@@ -3123,8 +2893,6 @@ main() {
     printf '    %sWowWotlkAutoinstall.AppImage%s  one-click WoW 3.3.5a client install\n' "$BOLD" "$RESET"
     printf '    %sLivewire.AppImage%s     live GitHub telemetry board (pushes, stars, releases)\n' "$BOLD" "$RESET"
     printf '    %sMusicAIPlayer.AppImage%s  music for long coding sessions (YouTube import, ACE-Step)\n' "$BOLD" "$RESET"
-    printf '    %skderice%s               toggle the desktop rice (%skderice restore%s = stock Breeze)\n' \
-        "$BOLD" "$RESET" "$BOLD" "$RESET"
     printf '    %s(or find everything in the app menu)%s\n\n' "$DIM" "$RESET"
 }
 
